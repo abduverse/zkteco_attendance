@@ -60,6 +60,7 @@ class ManualCheckinRequest(Document):
             log_type=self.log_type,
             checkin_name=existing_name,
             is_overtime=self.is_overtime,
+            remark=self.request_remarks,
         )
 
         self.db_set("applied_checkin", result["name"], update_modified=False)

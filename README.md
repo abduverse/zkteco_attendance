@@ -169,11 +169,19 @@ weekly rest day, and Saturday follows the shift's **Saturday Working Mode**
 - *Actual Pairs (IN-OUT)*: sums each matched IN→OUT pair (more accurate if
   employees punch for breaks too).
 
-**Missing Check-In/Out Action** controls what happens on days with only one
-punch:
-- *Mark as Invalid* — excluded from hours, flagged for review.
-- *Mark as Present* — counted using available punches.
-- *Require Manual Review* — flagged, no hours counted.
+**Missing Check-In/Out Action** (deprecated): days with only one punch
+(unpaired checkins — an IN without an OUT, or an OUT without an IN) are
+always marked **Invalid**, regardless of this setting.
+
+**Status rules (working days):**
+- **Present** — worked hours are greater than **Half Day Minimum Hours**.
+- **Half Day** — worked hours are less than or equal to Half Day Minimum
+  Hours but greater than zero.
+- **Absent** — worked hours are zero or there are no checkins at all.
+- **Invalid** — unpaired checkins (a punch is missing its IN or OUT pair).
+
+Full Day Minimum Hours no longer affects the status — any hours above the
+half-day threshold already count as a full Present day.
 
 **Grace Periods** (per shift, on working days):
 - A first IN after **Start Time + Late Entry Grace** is a *late entry*; the
@@ -265,6 +273,15 @@ per-employee, per-day breakdown of raw punches.
 - **Shift info in dialog**: when adding or editing a checkin, the dialog
   displays a modern shift info card showing the assigned shift's timing,
   hours, Saturday mode, overtime settings, and lunch break at a glance.
+- **Pull checkins**: the **Pull checkins** button syncs biometric devices
+  without leaving the page. With a **Biometric Device** selected in the
+  filter bar it connects to that device right away and shows a live
+  progress dialog (same as the device form's **Pull Checkins**);
+  when no device is selected it queues a background sync for **all active
+  devices** — results land in **Attendance Sync Log**. After a foreground
+  pull, a loaded report refreshes automatically so new punches appear
+  immediately. Requires one of the sync roles (System Manager / HR Manager /
+  Biometric Device Manager).
 
 This is useful for spot-checking raw punches behind a Present/Absent/Half
 Day result before finalizing payroll.

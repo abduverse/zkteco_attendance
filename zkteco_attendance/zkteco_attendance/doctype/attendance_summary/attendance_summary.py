@@ -39,10 +39,10 @@ class AttendanceSummary(Document):
 
     @frappe.whitelist()
     def save_manual_checkin(self, employee, checkin_time, log_type,
-                             checkin_name=None, is_overtime=0):
+                             checkin_name=None, is_overtime=0, remark=None):
         """
         Add a new Employee Checkin or update an existing one manually.
-        Saves edited_by / edited_at / manually_edited flags.
+        Saves edited_by / edited_at / manually_edited flags, plus an optional remark.
         Called from the Daily Checkins dashboard (and optionally from here).
         Returns the created/updated checkin name.
         """
@@ -60,6 +60,7 @@ class AttendanceSummary(Document):
             log_type=log_type,
             checkin_name=checkin_name,
             is_overtime=is_overtime,
+            remark=remark,
         )
 
     # ── called by JS "Process Attendance" ────────────────────────────────────

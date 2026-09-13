@@ -12,7 +12,7 @@ Run with: bench run-tests --app zkteco_attendance
 
 import unittest
 from datetime import date, datetime
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import frappe
 from frappe.utils import get_datetime
@@ -196,8 +196,8 @@ class TestGraceAndShiftOvertime(unittest.TestCase):
         self.assertAlmostEqual(result["hours"], 8.8333, places=2)
         self.assertEqual(result["status"], "Present")
 
-    def test_classify_day_late_entry_can_drop_to_absent(self):
-        """A big late arrival reduces effective hours below the half-day mark."""
+    def test_classify_day_late_entry_can_drop_to_half_day(self):
+        """A big late arrival reduces effective hours to the half-day band."""
         from zkteco_attendance.zkteco_attendance.attendance_processor import classify_day
 
         shift = _day_shift(late_entry_grace=0)  # 08:00 start, half day at 4h
@@ -207,9 +207,9 @@ class TestGraceAndShiftOvertime(unittest.TestCase):
         ]
         result = classify_day(checkins, shift, "First IN - Last OUT", "Mark as Invalid")
 
-        # raw 5h, 4h late -> 1h effective -> Absent
+        # raw 5h, 4h late -> 1h effective -> Half Day (0 < 1h <= 4h)
         self.assertTrue(result["is_late"])
-        self.assertEqual(result["status"], "Absent")
+        self.assertEqual(result["status"], "Half Day")
         self.assertAlmostEqual(result["hours"], 1.0, places=2)
 
     def test_classify_day_early_exit_grace_deducts_minutes(self):
@@ -687,8 +687,8 @@ class TestLunchBreakDeduction(unittest.TestCase):
 
 
 class TestSaturdayHalfDayMode(unittest.TestCase):
-    """Saturday Mode = Half Day: present status is decided by meeting
-    saturday_half_day_hours with actual effective worked hours (no credit).
+    """Saturday Mode = Half Day: any worked hours → Present,
+    no checkins (or zero hours) → Absent.
     """
 
     def test_saturday_half_day_4h_worked_is_present(self):
@@ -756,13 +756,14 @@ class TestSaturdayHalfDayMode(unittest.TestCase):
         self.assertAlmostEqual(result["day_ot_hours"], 6.0, places=2)
         self.assertAlmostEqual(result["absent_hours"], 0.0, places=2)
 
-    def test_saturday_half_day_short_checkin_is_half_day(self):
-        """1h worked < saturday_half_day_hours=4 → Half Day, 3h absent."""
+    def test_saturday_half_day_short_checkin_is_present(self):
+        """1h worked on Saturday Half Day → Present (any hours count), 0 absent."""
         from zkteco_attendance.zkteco_attendance.attendance_processor import classify_day
 
         shift = _day_shift(
             saturday_mode="Half Day",
             saturday_half_day_hours=4,
+            saturday_end_time="09:00:00",
         )
         checkins = [
             _mk_checkin("C1", "2026-08-15 08:00:00", "IN"),
@@ -772,12 +773,12 @@ class TestSaturdayHalfDayMode(unittest.TestCase):
                                "Mark as Invalid", is_saturday=True,
                                work_date=date(2026, 8, 15))
 
-        self.assertEqual(result["status"], "Half Day")
+        self.assertEqual(result["status"], "Present")
         self.assertAlmostEqual(result["hours"], 1.0, places=2)
-        self.assertAlmostEqual(result["absent_hours"], 3.0, places=2)  # 4 - 1 = 3
+        self.assertAlmostEqual(result["absent_hours"], 0.0, places=2)
 
-    def test_saturday_half_day_no_checkins_is_half_day(self):
-        """No checkins on Saturday Half Day → Half Day, no absent."""
+    def test_saturday_half_day_no_checkins_is_absent(self):
+        """No checkins on Saturday Half Day → Absent with full absent hours."""
         from zkteco_attendance.zkteco_attendance.attendance_processor import classify_day
 
         shift = _day_shift(
@@ -788,8 +789,8 @@ class TestSaturdayHalfDayMode(unittest.TestCase):
                                "Mark as Invalid", is_saturday=True,
                                work_date=date(2026, 8, 15))
 
-        self.assertEqual(result["status"], "Half Day")
-        self.assertAlmostEqual(result["absent_hours"], 0.0, places=2)
+        self.assertEqual(result["status"], "Absent")
+        self.assertAlmostEqual(result["absent_hours"], 8.0, places=2)
 
     def test_saturday_half_day_late_entry_deducts_hours(self):
         """Late entry beyond grace on Saturday Half Day reduces effective hours."""
@@ -810,7 +811,8 @@ class TestSaturdayHalfDayMode(unittest.TestCase):
                                work_date=date(2026, 8, 15))
 
         self.assertEqual(result["status"], "Present")
-        self.assertAlmostEqual(result["hours"], 4.75, places=2)  # 5 - 0.25 late
+        # 08:15 -> 13:00 = 4h45m span; 15 min late minus 10 min grace = 5 min deducted
+        self.assertAlmostEqual(result["hours"], 4.75 - 5.0 / 60.0, places=2)  # 4.6667
         self.assertAlmostEqual(result["absent_hours"], 0.0, places=2)
 
     @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_holidays_in_range")
@@ -845,6 +847,96 @@ class TestSaturdayHalfDayMode(unittest.TestCase):
         # 5h worked ≥ 4h saturday_half_day_hours → Present
         self.assertEqual(result["working_days"], 1.0)
         self.assertAlmostEqual(result["total_working_hours"], 5.0, places=2)
+
+
+class TestStatusClassification(unittest.TestCase):
+    """Working-day status rules:
+      Present  — worked hours > half_day_hours
+      Half Day — 0 < worked hours <= half_day_hours
+      Absent   — worked hours = 0 or no checkins
+      Invalid  — unpaired checkins (missing IN or OUT)
+    """
+
+    def test_hours_above_half_day_is_present(self):
+        """5h worked with half_day_hours=4 → Present (no full-day minimum)."""
+        from zkteco_attendance.zkteco_attendance.attendance_processor import classify_day
+
+        shift = _day_shift(end_time="13:00:00")
+        checkins = [
+            _mk_checkin("C1", "2026-08-10 08:00:00", "IN"),
+            _mk_checkin("C2", "2026-08-10 13:00:00", "OUT"),
+        ]
+        result = classify_day(checkins, shift, "First IN - Last OUT", "Mark as Invalid")
+
+        self.assertEqual(result["status"], "Present")
+        self.assertAlmostEqual(result["absent_hours"], 0.0, places=2)
+
+    def test_hours_equal_half_day_is_half_day(self):
+        """Exactly half_day_hours=4 worked → Half Day, not Present."""
+        from zkteco_attendance.zkteco_attendance.attendance_processor import classify_day
+
+        shift = _day_shift(end_time="12:00:00")
+        checkins = [
+            _mk_checkin("C1", "2026-08-10 08:00:00", "IN"),
+            _mk_checkin("C2", "2026-08-10 12:00:00", "OUT"),
+        ]
+        result = classify_day(checkins, shift, "First IN - Last OUT", "Mark as Invalid")
+
+        self.assertEqual(result["status"], "Half Day")
+        self.assertAlmostEqual(result["hours"], 4.0, places=2)
+        self.assertAlmostEqual(result["absent_hours"], 4.0, places=2)  # std/2
+
+    def test_hours_below_half_day_is_half_day(self):
+        """2h worked with half_day_hours=4 → Half Day (not Absent)."""
+        from zkteco_attendance.zkteco_attendance.attendance_processor import classify_day
+
+        shift = _day_shift(end_time="10:00:00")
+        checkins = [
+            _mk_checkin("C1", "2026-08-10 08:00:00", "IN"),
+            _mk_checkin("C2", "2026-08-10 10:00:00", "OUT"),
+        ]
+        result = classify_day(checkins, shift, "First IN - Last OUT", "Mark as Invalid")
+
+        self.assertEqual(result["status"], "Half Day")
+        self.assertAlmostEqual(result["hours"], 2.0, places=2)
+
+    def test_no_checkins_is_absent(self):
+        """No checkins on a working day → Absent with full absent hours."""
+        from zkteco_attendance.zkteco_attendance.attendance_processor import classify_day
+
+        shift = _day_shift()
+        result = classify_day([], shift, "First IN - Last OUT", "Mark as Invalid")
+
+        self.assertEqual(result["status"], "Absent")
+        self.assertAlmostEqual(result["hours"], 0.0, places=2)
+        self.assertAlmostEqual(result["absent_hours"], 8.0, places=2)  # std hours
+
+    def test_unpaired_checkin_is_always_invalid(self):
+        """Only an IN punch → Invalid, even with 'Mark as Present' configured."""
+        from zkteco_attendance.zkteco_attendance.attendance_processor import classify_day
+
+        shift = _day_shift()
+        checkins = [
+            _mk_checkin("C1", "2026-08-10 08:00:00", "IN"),
+        ]
+        for action in ("Mark as Invalid", "Mark as Present", "Require Manual Review"):
+            result = classify_day(checkins, shift, "First IN - Last OUT", action)
+            self.assertEqual(result["status"], "Invalid", msg=action)
+            self.assertAlmostEqual(result["hours"], 0.0, places=2)
+
+    def test_zero_hours_checkins_is_absent(self):
+        """Paired checkins spanning zero time → Absent."""
+        from zkteco_attendance.zkteco_attendance.attendance_processor import classify_day
+
+        shift = _day_shift()
+        checkins = [
+            _mk_checkin("C1", "2026-08-10 08:00:00", "IN"),
+            _mk_checkin("C2", "2026-08-10 08:00:00", "OUT"),
+        ]
+        result = classify_day(checkins, shift, "First IN - Last OUT", "Mark as Invalid")
+
+        self.assertEqual(result["status"], "Absent")
+        self.assertAlmostEqual(result["hours"], 0.0, places=2)
 
 
 class TestHolidayAsPresent(unittest.TestCase):
@@ -904,6 +996,68 @@ class TestHolidayAsPresent(unittest.TestCase):
         self.assertAlmostEqual(result["total_working_hours"], 8.0, places=2)
         self.assertAlmostEqual(result["holiday_ot_hours"], 8.0, places=2)
         self.assertAlmostEqual(result["absent_hours"], 0.0, places=2)
+
+
+class TestManualCheckinRemark(unittest.TestCase):
+    """
+    save_manual_checkin_record must store the remark on the Employee Checkin
+    (zk_remark) when the field exists, and stay silent when it doesn't
+    (pre-patch databases).
+    """
+
+    def _run(self, remark_value, has_remark_col=True):
+        """Returns (inserted_doc, get_doc_data, result)."""
+        from zkteco_attendance.zkteco_attendance.attendance_processor import save_manual_checkin_record
+
+        emp_doc = MagicMock()
+        emp_doc.employee_name = "Test Employee"
+
+        doc = MagicMock()
+        doc.name = "CHK-REMARK-001"
+        captured_data = {}
+
+        def fake_get_doc(data):
+            if isinstance(data, dict):
+                captured_data.update(data)
+                return doc
+            return doc
+
+        with patch("zkteco_attendance.zkteco_attendance.attendance_processor.has_column",
+                   side_effect=lambda doctype, fieldname: has_remark_col if fieldname == "zk_remark" else False), \
+             patch("frappe.db.exists", return_value=False), \
+             patch("frappe.db.get_value", return_value=emp_doc), \
+             patch("frappe.get_doc", side_effect=fake_get_doc), \
+             patch("frappe.db.commit"):
+            result = save_manual_checkin_record(
+                employee="HR-EMP-00001",
+                checkin_time="2026-08-10 08:00:00",
+                log_type="IN",
+                remark=remark_value,
+            )
+        return doc, captured_data, result
+
+    def test_remark_is_stored_on_created_checkin(self):
+        """The remark lands in the new checkin's zk_remark field."""
+        doc, data, result = self._run("Gate was locked")
+
+        self.assertEqual(result["action"], "created")
+        self.assertEqual(data.get("zk_remark"), "Gate was locked")
+        doc.insert.assert_called_once_with(ignore_permissions=True)
+
+    def test_none_remark_is_normalized_to_empty_string(self):
+        """A missing remark is stored as an empty string, not None."""
+        doc, data, result = self._run(None)
+
+        self.assertEqual(result["action"], "created")
+        self.assertEqual(data.get("zk_remark"), "")
+
+    def test_remark_skipped_without_column(self):
+        """Pre-patch DB: no zk_remark column -> no error, no remark set."""
+        doc, data, result = self._run("Gate was locked", has_remark_col=False)
+
+        self.assertEqual(result["action"], "created")
+        self.assertNotIn("zk_remark", data)
+        doc.insert.assert_called_once()
 
 
 class TestDailyCheckinsBiometricDeviceFilter(unittest.TestCase):

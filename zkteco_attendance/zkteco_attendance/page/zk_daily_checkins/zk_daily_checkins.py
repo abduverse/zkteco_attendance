@@ -22,11 +22,11 @@ def get_data(attendance_summary=None, from_date=None, to_date=None,
 
 @frappe.whitelist()
 def save_manual_checkin(attendance_summary=None, employee=None, checkin_time=None,
-                        log_type=None, checkin_name=None, is_overtime=0):
+                        log_type=None, checkin_name=None, is_overtime=0, remark=None):
     from zkteco_attendance.zkteco_attendance.api.endpoints import save_manual_checkin as _save
     return _save(attendance_summary=attendance_summary, employee=employee,
                  checkin_time=checkin_time, log_type=log_type,
-                 checkin_name=checkin_name, is_overtime=is_overtime)
+                 checkin_name=checkin_name, is_overtime=is_overtime, remark=remark)
 
 
 @frappe.whitelist()
@@ -77,6 +77,18 @@ def get_invalid_days(attendance_summary=None, from_date=None, to_date=None,
         ]
         if not invalid_dates:
             continue
+
+        # Include the raw punches recorded on each invalid day so the dialog
+        # can show exactly which checkins are missing their IN/OUT pair.
+        day_map = {d.get("date"): d for d in (emp.get("days") or [])}
+        day_checkins = [
+            {
+                "date":     dt,
+                "checkins": (day_map.get(dt) or {}).get("checkins") or [],
+            }
+            for dt in invalid_dates
+        ]
+
         invalids.append({
             "employee":      emp.get("employee"),
             "employee_name": emp.get("fullname") or emp.get("employee_name") or emp.get("employee"),
@@ -84,6 +96,7 @@ def get_invalid_days(attendance_summary=None, from_date=None, to_date=None,
             "shift_type":    emp.get("shift_type") or "",
             "invalid_count": len(invalid_dates),
             "invalid_dates": invalid_dates,
+            "day_checkins":  day_checkins,
         })
 
     return {

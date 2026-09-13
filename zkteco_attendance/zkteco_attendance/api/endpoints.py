@@ -204,12 +204,12 @@ def get_daily_checkins(attendance_summary=None, from_date=None, to_date=None,
 
 @frappe.whitelist()
 def save_manual_checkin(attendance_summary=None, employee=None, checkin_time=None,
-                        log_type=None, checkin_name=None, is_overtime=0):
+                        log_type=None, checkin_name=None, is_overtime=0, remark=None):
     """
     Add or update an Employee Checkin manually from the Daily Checkins dashboard.
     Works standalone (attendance_summary=None) or within an Attendance Summary
     context (which also validates the employee belongs to the summary).
-    Records edited_by / edited_at for audit trail.
+    Records edited_by / edited_at for audit trail, plus an optional remark.
     """
     frappe.only_for(["System Manager", "HR Manager", "Biometric Device Manager",
                     "Checkin Editor"])
@@ -224,6 +224,7 @@ def save_manual_checkin(attendance_summary=None, employee=None, checkin_time=Non
             log_type=log_type,
             checkin_name=checkin_name,
             is_overtime=is_overtime,
+            remark=remark,
         )
 
     # Standalone: no Attendance Summary required
@@ -233,6 +234,7 @@ def save_manual_checkin(attendance_summary=None, employee=None, checkin_time=Non
         log_type=log_type,
         checkin_name=checkin_name,
         is_overtime=is_overtime,
+        remark=remark,
     )
 
 

@@ -47,6 +47,10 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                     <button class="btn btn-default btn-sm" id="zk-invalids-btn" title="${__("Show employees with invalid attendance days in the selected range")}">
                         <i class="fa fa-exclamation-triangle" style="color:var(--orange-500);"></i> ${__("Check invalids")}
                     </button>
+                    &nbsp;
+                    <button class="btn btn-default btn-sm" id="zk-pull-btn" title="${__("Pull attendance logs from the selected biometric device (or all active devices) and create Employee Checkin records")}">
+                        <i class="fa fa-refresh"></i> ${__("Pull checkins")}
+                    </button>
                     <span style="flex:1;"></span>
                     <button class="btn btn-default btn-sm" id="zk-pdf-btn" title="${__("Download the loaded report as a PDF")}" disabled>
                         <i class="fa fa-file-pdf-o" style="color:var(--red-500);"></i> ${__("Download PDF")}
@@ -187,6 +191,263 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
 
     // ── Load / Clear / Download PDF buttons ────────────────────────────────
     $filterWrap.find("#zk-load-btn").on("click", () => trigger_load());
+
+    // ── Pull checkins — sync the selected device (or all active devices) ──
+    // Reuses the same foreground endpoints as the Biometric Device form's
+    // Pull Checkins button: pull_checkins_now runs the sync synchronously
+    // while get_pull_progress supplies live progress (polling fallback when
+    // realtime events are unavailable).
+    $filterWrap.find("#zk-pull-btn").on("click", function () {
+        const device = device_ctrl.get_value();
+
+        if (device) {
+            const deviceLabel = device;  // Biometric Device is named by device_name
+            frappe.confirm(
+                __("This will connect to <b>{0}</b> now, pull attendance logs, and create Employee Checkin records. This may take a little while for devices with many logs. Continue?",
+                    [deviceLabel]),
+                () => run_pull_with_progress(device, deviceLabel)
+            );
+        } else {
+            frappe.confirm(
+                __("No device is selected, so <b>all active devices</b> will be synced in the background. Check the <a href='/app/attendance-sync-log'>Attendance Sync Log</a> for results. Continue?"),
+                () => {
+                    frappe.call({
+                        method: "zkteco_attendance.zkteco_attendance.api.endpoints.sync_all_devices",
+                        freeze: true,
+                        freeze_message: __("Queueing sync for all active devices…"),
+                        callback() {
+                            frappe.show_alert({
+                                message: __("Sync jobs queued for all active devices. Check the Attendance Sync Log for results."),
+                                indicator: "blue",
+                            }, 6);
+                        },
+                    });
+                }
+            );
+        }
+    });
+
+    // Foreground pull with live progress — mirrors the Biometric Device
+    // form's pull_checkins_with_progress / _run_pull_checkins flow.
+    function run_pull_with_progress(deviceName, deviceLabel) {
+        // Unique token for this pull run — echoed back in every progress
+        // payload so stale progress from a previous run is never applied.
+        const run_id = "zk_pull_" + Date.now() + "_" + Math.random().toString(36).slice(2, 10);
+
+        const dialog = new frappe.ui.Dialog({
+            title: __("Pulling Check-ins from {0}", [deviceLabel]),
+            size: "large",
+            fields: [
+                { fieldtype: "HTML", fieldname: "progress_html" },
+            ],
+        });
+
+        const $dlgBody = dialog.fields_dict.progress_html.$wrapper;
+        $dlgBody.html(`
+            <div class="zkteco-pull-progress">
+                <div class="zkteco-pull-stage text-muted" style="margin-bottom:8px;">
+                    ${__("Starting…")}
+                </div>
+                <div class="progress" style="height:18px;">
+                    <div class="progress-bar progress-bar-striped active zkteco-pull-bar"
+                         role="progressbar" style="width:5%;">
+                    </div>
+                </div>
+                <div class="zkteco-pull-counts" style="margin-top:14px; display:none;">
+                    <table class="table table-bordered table-sm" style="margin-bottom:0;">
+                        <tr>
+                            <td>${__("Total Pulled")}</td><td class="text-right zkteco-cnt-total">0</td>
+                            <td>${__("New")}</td><td class="text-right text-success zkteco-cnt-new">0</td>
+                        </tr>
+                        <tr>
+                            <td>${__("Duplicates")}</td><td class="text-right zkteco-cnt-dupes">0</td>
+                            <td>${__("Failed")}</td><td class="text-right text-danger zkteco-cnt-failed">0</td>
+                        </tr>
+                        <tr>
+                            <td>${__("Double Punches")}</td><td class="text-right text-muted zkteco-cnt-dp">0</td>
+                            <td>${__("Overtime Punches")}</td><td class="text-right text-warning zkteco-cnt-ot">0</td>
+                        </tr>
+                        <tr>
+                            <td colspan="2">${__("Status")}</td><td colspan="2" class="text-right zkteco-cnt-status">—</td>
+                        </tr>
+                    </table>
+                </div>
+                <div class="zkteco-pull-errors text-danger" style="margin-top:10px; display:none; max-height:150px; overflow:auto; font-size:12px;"></div>
+            </div>
+        `);
+
+        dialog.show();
+        dialog.get_close_btn().hide();
+
+        const $stage  = $dlgBody.find(".zkteco-pull-stage");
+        const $bar    = $dlgBody.find(".zkteco-pull-bar");
+        const $counts = $dlgBody.find(".zkteco-pull-counts");
+        const $errors = $dlgBody.find(".zkteco-pull-errors");
+
+        const setProgress = (pct, text) => {
+            pct = Math.max(0, Math.min(100, pct));
+            $bar.css("width", pct + "%");
+            if (text) $stage.text(text);
+        };
+
+        const handler = (data) => {
+            if (!data) return;
+            // Ignore progress belonging to a different pull run.
+            if (data.run_id && data.run_id !== run_id) return;
+
+            switch (data.stage) {
+                case "connecting":
+                    setProgress(5, data.message);
+                    break;
+                case "fetching":
+                    setProgress(10, data.message);
+                    break;
+                case "fetched":
+                    setProgress(15, data.message);
+                    break;
+                case "processing_raw": {
+                    const pct = data.total ? 15 + (data.current / data.total) * 35 : 15;
+                    setProgress(pct, data.message);
+                    break;
+                }
+                case "filtered":
+                    setProgress(55, data.message);
+                    break;
+                case "deduped":
+                    setProgress(55, data.message);
+                    $counts.show();
+                    $dlgBody.find(".zkteco-cnt-dp").text(data.double_punches ?? 0);
+                    break;
+                case "creating_checkins": {
+                    const pct = data.total ? 55 + (data.current / data.total) * 40 : 55;
+                    setProgress(pct, data.message);
+                    $counts.show();
+                    $dlgBody.find(".zkteco-cnt-new").text(data.new_records ?? 0);
+                    $dlgBody.find(".zkteco-cnt-dupes").text(data.duplicates ?? 0);
+                    $dlgBody.find(".zkteco-cnt-failed").text(data.failed ?? 0);
+                    $dlgBody.find(".zkteco-cnt-ot").text(data.overtime_records ?? 0);
+                    $dlgBody.find(".zkteco-cnt-dp").text(data.double_punches ?? 0);
+                    $dlgBody.find(".zkteco-cnt-total").text(data.total ?? 0);
+                    break;
+                }
+                case "done":
+                    setProgress(100, data.message || __("Done."));
+                    break;
+                case "error":
+                case "failed":
+                    setProgress(100, data.message || __("Failed."));
+                    $stage.removeClass("text-muted").addClass("text-danger");
+                    break;
+            }
+        };
+
+        // Realtime progress (fast path) + polling fallback, as on the
+        // Biometric Device form.
+        let realtime_on = false;
+        try {
+            if (frappe.realtime && typeof frappe.realtime.on === "function") {
+                frappe.realtime.on("zkteco_pull_progress", handler);
+                realtime_on = true;
+            }
+        } catch (e) {
+            realtime_on = false;
+        }
+
+        let poll_timer = null;
+        const stopPolling = () => {
+            if (poll_timer) {
+                clearInterval(poll_timer);
+                poll_timer = null;
+            }
+        };
+        const poll = () => {
+            if (!dialog.$wrapper.is(":visible")) {
+                stopPolling();
+            }
+            frappe.call({
+                method: "zkteco_attendance.zkteco_attendance.api.endpoints.get_pull_progress",
+                args: { device_name: deviceName, run_id: run_id },
+                callback(r) {
+                    if (r && r.message) handler(r.message);
+                },
+            });
+        };
+        poll_timer = setInterval(poll, 1500);
+        poll();
+
+        const cleanup = () => {
+            stopPolling();
+            if (realtime_on) {
+                try {
+                    frappe.realtime.off("zkteco_pull_progress", handler);
+                } catch (e) { /* ignore */ }
+            }
+        };
+
+        frappe.call({
+            method: "zkteco_attendance.zkteco_attendance.api.endpoints.pull_checkins_now",
+            args: { device_name: deviceName, run_id: run_id },
+            callback(r) {
+                cleanup();
+
+                if (!r.message) {
+                    setProgress(100, __("No response from server."));
+                    dialog.get_close_btn().show();
+                    return;
+                }
+
+                const res = r.message;
+
+                if (!res.success) {
+                    setProgress(100, __("Pull failed."));
+                    $stage.removeClass("text-muted").addClass("text-danger");
+                    $errors.show().text(res.error || __("Unknown error"));
+                    dialog.get_close_btn().show();
+                    return;
+                }
+
+                setProgress(100, __("Pull completed."));
+                $counts.show();
+                $dlgBody.find(".zkteco-cnt-total").text(res.total_records ?? 0);
+                $dlgBody.find(".zkteco-cnt-new").text(res.new_records ?? 0);
+                $dlgBody.find(".zkteco-cnt-dupes").text(res.duplicates ?? 0);
+                $dlgBody.find(".zkteco-cnt-failed").text(res.failed ?? 0);
+                $dlgBody.find(".zkteco-cnt-ot").text(res.overtime_records ?? 0);
+                $dlgBody.find(".zkteco-cnt-dp").text(res.double_punches ?? 0);
+
+                const statusColors = { Success: "text-success", Partial: "text-warning", Failed: "text-danger" };
+                $dlgBody.find(".zkteco-cnt-status")
+                    .removeClass("text-success text-warning text-danger")
+                    .addClass(statusColors[res.sync_status] || "")
+                    .text(res.sync_status || "—");
+
+                if (res.errors && res.errors.length) {
+                    $errors.show().html(
+                        "<b>" + __("Issues") + ":</b><br>" +
+                        res.errors.map(e => frappe.utils.escape_html(e)).join("<br>")
+                    );
+                }
+
+                frappe.show_alert({
+                    message: __("Pulled {0} record(s): {1} new, {2} duplicate(s), {3} failed.",
+                        [res.total_records, res.new_records, res.duplicates, res.failed]),
+                    indicator: res.sync_status === "Success" ? "green" : (res.sync_status === "Partial" ? "orange" : "red"),
+                }, 8);
+
+                dialog.get_close_btn().show();
+
+                // New checkins may have arrived — refresh the loaded report.
+                if (state.data) trigger_load();
+            },
+            error() {
+                cleanup();
+                setProgress(100, __("Pull failed."));
+                $stage.removeClass("text-muted").addClass("text-danger");
+                dialog.get_close_btn().show();
+            },
+        });
+    }
+
     $filterWrap.find("#zk-clear-btn").on("click", () => {
         from_ctrl.set_value("");
         to_ctrl.set_value("");
@@ -315,9 +576,18 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                     <span class="indicator-pill red">${inv.invalid_count}</span>
                 </td>
                 <td style="border:1px solid var(--border-color);padding:6px 10px;">
-                    ${(inv.invalid_dates || []).map(dt =>
-                        `<span class="zk-invalid-date" title="${__("Invalid attendance day")}" style="display:inline-block;border:1px solid #b03a3a;border-radius:4px;padding:1px 6px;margin:2px;font-size:0.75rem;background:#ffd6d6;color:#7a1010;">${frappe.datetime.str_to_user(dt)}</span>`
-                    ).join(" ")}
+                    ${(inv.day_checkins && inv.day_checkins.length
+                        ? inv.day_checkins
+                        : (inv.invalid_dates || []).map(dt => ({ date: dt, checkins: null }))).map(dc => {
+                        const punches = dc.checkins === null ? null : (dc.checkins || []).map(c =>
+                            `<span class="zk-chip ${c.log_type === "IN" ? "zk-chip-in" : "zk-chip-out"}${c.is_overtime ? " zk-chip-ot" : ""}${c.ignored ? " zk-chip-ignored" : ""}" title="${c.is_overtime ? __("Overtime punch") : c.log_type}${c.ignored ? " — " + __("ignored (excluded from attendance)") : ""}"${c.ignored ? " style=\"opacity:0.55;text-decoration:line-through;\"" : ""}>${c.time} <b>${c.log_type}${c.is_overtime ? " (OT)" : ""}</b>${c.ignored ? " ⊘" : ""}</span>`
+                        ).join(" ");
+                        return `
+                            <div style="margin:2px 0; display:flex; align-items:center; flex-wrap:wrap; border:1px solid var(--border-color); border-radius:4px; padding:2px 6px; background:var(--card-bg);">
+                                <span class="zk-invalid-date" style="display:inline-block;border:1px solid #b03a3a;border-radius:4px;padding:1px 6px;margin:2px;font-size:0.75rem;background:#ffd6d6;color:#7a1010;">${frappe.datetime.str_to_user(dc.date)}</span>
+                                ${punches ? `<span style="margin-left:6px;">${punches}</span>` : (punches === null ? "" : `<span class="text-muted" style="margin-left:6px;font-size:0.75rem;">${__("No checkins recorded")}</span>`)}
+                            </div>`;
+                    }).join("")}
                 </td>
             </tr>`).join("");
 
@@ -327,24 +597,31 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                 ${__("{0} employee(s) with invalid days, of {1} checked.", [invalids.length, payload.total_employees_checked || 0])}
             </div>
             <div style="max-height:55vh;overflow:auto;">
-                <table class="table table-bordered" style="margin-bottom:0;">
+                <table class="table table-bordered" style="margin-bottom:0; border:1px solid #b0b0b0; border-radius:4px;">
                     <thead>
                         <tr style="background:var(--table-bg,var(--card-bg));">
                             <th style="width:30%;">${__("Employee")}</th>
                             <th style="width:20%;">${__("Department")}</th>
                             <th style="width:12%; text-align:center;">${__("Invalid Days")}</th>
-                            <th>${__("Invalid Dates")}</th>
+                            <th>${__("Invalid Dates & Checkins")}</th>
                         </tr>
                     </thead>
                     <tbody>${rows}</tbody>
                 </table>
             </div>`;
 
+        // Render via an HTML field — the Dialog API renders fields into the
+        // modal body itself, so this works across Frappe versions (unlike
+        // reaching into dlg.$body / .modal-body directly).
         const dlg = new frappe.ui.Dialog({
             title: __("Employees with Invalid Days"),
-            size: "large",
+            size: "extra-large",
+            fields: [
+                { fieldtype: "HTML", fieldname: "invalids_html", options: tableHtml },
+            ],
+            primary_action_label: __("Close"),
+            primary_action: () => dlg.hide(),
         });
-        dlg.$body.find(".modal-body").html(`<div style="padding:12px 15px;">${tableHtml}</div>`);
         dlg.show();
     }
 
@@ -412,8 +689,12 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
             const ignoredClass = c.ignored ? "zk-chip-ignored" : "";
 
             let manualBadge = "";
+            let remarkBadge = "";
             let editBtn     = "";
             let ignoreBtn   = "";
+            if (c.remark) {
+                remarkBadge = `<span class="zk-manual-badge" title="${__("Remark")}: ${frappe.utils.escape_html(c.remark)}">💬</span>`;
+            }
             if (c.manually_edited) {
                 const tip = c.edited_by
                     ? `${__("Edited by")} ${frappe.utils.escape_html(c.edited_by)}${c.edited_at ? " @ " + c.edited_at.substring(0,16) : ""}`
@@ -439,7 +720,7 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                                 data-ignored="${c.ignored ? 1 : 0}"
                                 style="cursor:pointer;margin-left:4px;opacity:0.6;">${c.ignored ? "⊘" : "○"}</span>`;
             }
-            return `<span class="zk-chip ${otClass} ${ignoredClass}">${c.time} <b>${label}</b>${manualBadge} ${editBtn} ${ignoreBtn}</span>`;
+            return `<span class="zk-chip ${otClass} ${ignoredClass}">${c.time} <b>${label}</b>${manualBadge}${remarkBadge} ${editBtn} ${ignoreBtn}</span>`;
         }).join(" ");
 
         if (!state.can_edit_checkins) {
@@ -696,7 +977,7 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
             </div>`);
     }
 
-    function show_checkin_dialog({ employee, date, time, logtype, summary, checkin_name, is_overtime, mode }) {
+    function show_checkin_dialog({ employee, date, time, logtype, summary, checkin_name, is_overtime, remark, mode }) {
         const defaultTime = time || "08:00:00";
         const isOT = is_overtime ? 1 : 0;
 
@@ -741,6 +1022,8 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                   options: "IN\nOUT", default: logtype || "IN", reqd: 1 },
                 { fieldtype: "Check", fieldname: "is_overtime", label: __("Is Overtime"),
                   default: isOT, description: __("Mark this punch as an overtime punch") },
+                { fieldtype: "Small Text", fieldname: "zk_remark", label: __("Remark"),
+                  default: remark || "", description: __("Optional note stored on the check-in when the request is submitted") },
             ],
             primary_action_label: mode === "edit" ? __("Create Request") : __("Create Request"),
             primary_action(vals) {
@@ -762,6 +1045,7 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                         log_type:           vals.log_type,
                         checkin_name:       checkin_name || null,
                         is_overtime:        vals.is_overtime ? 1 : 0,
+                        remarks:            vals.zk_remark || null,
                     },
                     freeze: true,
                     freeze_message: __("Creating request…"),

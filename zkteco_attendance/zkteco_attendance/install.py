@@ -15,6 +15,7 @@ def after_install():
     _add_employee_checkin_overtime_field()
     _add_employee_checkin_manual_fields()
     _add_employee_checkin_ignored_field()
+    _add_employee_checkin_remark_field()
     _add_employee_biometric_field()
     _add_employee_location_device_field()
     frappe.db.commit()
@@ -63,6 +64,27 @@ def _field_exists(doctype, fieldname):
         pass
 
     return frappe.db.exists("Custom Field", {"dt": doctype, "fieldname": fieldname})
+
+
+def _add_employee_checkin_remark_field():
+    """Add zk_remark field to Employee Checkin for a free-text punch remark."""
+    if _field_exists("Employee Checkin", "zk_remark"):
+        return
+
+    after = "edited_at" if _field_exists("Employee Checkin", "edited_at") else "log_type"
+
+    cf = frappe.get_doc({
+        "doctype": "Custom Field",
+        "dt": "Employee Checkin",
+        "module": "Zkteco Attendance",
+        "label": "Remark",
+        "fieldname": "zk_remark",
+        "fieldtype": "Small Text",
+        "insert_after": after,
+        "description": "Free-text remark on this checkin (e.g. reason for a manually added punch).",
+        "in_list_view": 0,
+    })
+    cf.insert(ignore_permissions=True)
 
 
 def _add_employee_biometric_field():
