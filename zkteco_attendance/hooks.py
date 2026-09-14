@@ -30,5 +30,5 @@ scheduler_events = {
 
 fixtures = [
     {"dt": "Custom Field", "filters": [["module", "=", "Zkteco Attendance"]]},
-    {"dt": "Role",         "filters": [["name", "in", ["Biometric Device Manager", "Checkin Editor"]]]}
+    {"dt": "Role",         "filters": [["name", "in", ["Biometric Device Manager", "Checkin Editor", "Checkin Request Approver"]]]}
 ]

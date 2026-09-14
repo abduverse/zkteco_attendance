@@ -34,7 +34,8 @@ sed -i '/zkteco_attendance/d' ~/frappe-bench/sites/apps.txt
 ```
 
 Installation automatically:
-- Creates **Biometric Device Manager** and **Checkin Editor** roles
+- Creates **Biometric Device Manager**, **Checkin Editor**, and
+  **Checkin Request Approver** roles
 - Adds **Biometric Device** (Link) and **Biometric Attendance ID** (Data)
   fields to Employee
 - Adds **Biometric Device**, **ZK Device Record ID**, **Overtime Punch**,
@@ -56,12 +57,20 @@ Assign the **Checkin Editor** role to users who should be able to add,
 edit, or ignore checkins from the Employee Daily Checkins page. Users
 without this role can view checkins but cannot modify them.
 
-### 2.2 Map employees to the device
+### 2.2 Checkin Request Approver Role
+
+Assign the **Checkin Request Approver** role to users who review Manual
+Checkin Requests: they can submit and cancel requests but cannot create
+or delete them. Cancelling a submitted request reverts the check-in it
+applied — a request that edited an existing check-in restores the
+original values, while a request that created a new check-in deletes it.
+
+### 2.3 Map employees to the device
 On each **Employee** record, fill in **Biometric Device** and
 **Biometric Attendance ID** — the attendance ID must match the User
 ID/Badge Number enrolled on the ZKTeco device for that person.
 
-### 2.3 Add a Biometric Device
+### 2.4 Add a Biometric Device
 Go to **Biometric Device** (new) and fill in:
 
 | Field | Notes |
@@ -320,10 +329,10 @@ Four roles can access this app's doctypes:
 | **HR Manager** | Full access to all features |
 | **Biometric Device Manager** | Manage devices, syncs, and attendance summaries |
 | **Checkin Editor** | Add, edit, and ignore checkins from the Daily Checkins page |
+| **Checkin Request Approver** | Submit and cancel Manual Checkin Requests (cancel reverts the applied check-in) |
 
-**Biometric Device Manager** and **Checkin Editor** are created
-automatically on install. Assign them to users who need specific access
-without full HR or System Manager privileges.
+**Biometric Device Manager**, **Checkin Editor**, and **Checkin Request
+Approver** are created automatically on install.
 
 ---
 

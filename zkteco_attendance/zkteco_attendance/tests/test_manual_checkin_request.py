@@ -6,9 +6,14 @@ touches the Employee Checkin table — the check-in is only created or
 updated when the request is submitted (on_submit delegates to the
 attendance processor's save_manual_checkin_record).
 
+Cancelling a submitted request reverts the applied check-in: "Edit"
+requests restore the original values snapshotted on submit, while "New"
+requests delete the check-in they created.
+
 Run with: bench run-tests --app zkteco_attendance
 """
 
+import json
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -56,12 +61,17 @@ class TestManualCheckinRequestOnSubmit(unittest.TestCase):
         self.assertEqual(args[3], "CHK-NEW-001")
 
     @patch("frappe.db.set_value")
+    @patch("zkteco_attendance.zkteco_attendance.utils.has_column", return_value=False)
     @patch("zkteco_attendance.zkteco_attendance.doctype.manual_checkin_request.manual_checkin_request.frappe.db.exists",
            return_value=True)
+    @patch("zkteco_attendance.zkteco_attendance.doctype.manual_checkin_request.manual_checkin_request.frappe.db.get_value")
     @patch("zkteco_attendance.zkteco_attendance.attendance_processor.save_manual_checkin_record")
-    def test_on_submit_updates_existing_checkin(self, mock_save, mock_exists, mock_set_value):
+    def test_on_submit_updates_existing_checkin(self, mock_save, mock_get_value,
+                                                mock_exists, mock_has_column, mock_set_value):
         """A request referencing an existing checkin updates it in place."""
         mock_save.return_value = {"name": "CHK-OLD-001", "action": "updated"}
+        # Original values read from the check-in before it is overwritten
+        mock_get_value.return_value = {"time": "2026-08-10 09:00:00", "log_type": "IN"}
 
         doc = frappe.get_doc(_request_dict(
             request_type="Edit",
@@ -80,6 +90,11 @@ class TestManualCheckinRequestOnSubmit(unittest.TestCase):
             is_overtime=1,
             remark=None,
         )
+
+        # The original values must be snapshotted for cancel-revert
+        snapshot = json.loads(doc.original_checkin_data)
+        self.assertEqual(snapshot["time"], "2026-08-10 09:00:00")
+        self.assertEqual(snapshot["log_type"], "IN")
 
     @patch("frappe.db.set_value")
     @patch("zkteco_attendance.zkteco_attendance.doctype.manual_checkin_request.manual_checkin_request.frappe.db.exists",
@@ -106,6 +121,123 @@ class TestManualCheckinRequestOnSubmit(unittest.TestCase):
         doc.on_submit()
 
         self.assertEqual(mock_save.call_args[1]["checkin_name"], None)
+
+
+class TestManualCheckinRequestOnCancel(unittest.TestCase):
+    """Cancelling the request must revert the applied Employee Checkin."""
+
+    def _cancelled_doc(self, request_type="New", applied_checkin="CHK-NEW-001",
+                       original_checkin_data=None):
+        doc = frappe.get_doc(_request_dict(request_type=request_type))
+        doc.applied_checkin = applied_checkin
+        if original_checkin_data is not None:
+            doc.original_checkin_data = json.dumps(original_checkin_data)
+        return doc
+
+    @patch("frappe.db.commit")
+    @patch("zkteco_attendance.zkteco_attendance.doctype.manual_checkin_request.manual_checkin_request.frappe.delete_doc")
+    @patch("zkteco_attendance.zkteco_attendance.doctype.manual_checkin_request.manual_checkin_request.frappe.db.exists",
+           return_value=True)
+    def test_on_cancel_deletes_created_checkin(self, mock_exists, mock_delete, mock_commit):
+        """Cancelling a "New" request deletes the check-in it created."""
+        doc = self._cancelled_doc(request_type="New")
+        doc.on_cancel()
+
+        mock_delete.assert_called_once_with(
+            "Employee Checkin", "CHK-NEW-001",
+            ignore_permissions=True, force=1)
+
+    @patch("frappe.db.commit")
+    @patch("frappe.db.set_value")
+    @patch("zkteco_attendance.zkteco_attendance.utils.has_column", return_value=False)
+    @patch("zkteco_attendance.zkteco_attendance.doctype.manual_checkin_request.manual_checkin_request.frappe.db.exists",
+           return_value=True)
+    def test_on_cancel_restores_original_values(self, mock_exists, mock_has_column,
+                                                mock_set_value, mock_commit):
+        """Cancelling an "Edit" request restores the snapshotted values."""
+        original = {"time": "2026-08-10 09:00:00", "log_type": "IN"}
+        doc = self._cancelled_doc(
+            request_type="Edit", applied_checkin="CHK-OLD-001",
+            original_checkin_data=original)
+        doc.on_cancel()
+
+        calls = {call[0][2]: call[0][3] for call in mock_set_value.call_args_list}
+        self.assertEqual(calls.get("time"), "2026-08-10 09:00:00")
+        self.assertEqual(calls.get("log_type"), "IN")
+        self.assertNotIn("manually_edited", calls)  # column absent -> skipped
+
+    @patch("frappe.db.commit")
+    @patch("frappe.db.set_value")
+    @patch("zkteco_attendance.zkteco_attendance.utils.has_column", return_value=True)
+    @patch("zkteco_attendance.zkteco_attendance.doctype.manual_checkin_request.manual_checkin_request.frappe.db.exists",
+           return_value=True)
+    def test_on_cancel_restores_optional_columns(self, mock_exists, mock_has_column,
+                                                 mock_set_value, mock_commit):
+        """Optional columns present in the snapshot are restored when they exist."""
+        original = {"time": "2026-08-10 09:00:00", "log_type": "IN",
+                    "is_overtime": 0, "zk_remark": "Original remark",
+                    "manually_edited": 1, "edited_by": "user@example.com",
+                    "edited_at": "2026-08-10 10:00:00"}
+        doc = self._cancelled_doc(
+            request_type="Edit", applied_checkin="CHK-OLD-001",
+            original_checkin_data=original)
+        doc.on_cancel()
+
+        calls = {call[0][2]: call[0][3] for call in mock_set_value.call_args_list}
+        self.assertEqual(calls.get("zk_remark"), "Original remark")
+        self.assertEqual(calls.get("edited_by"), "user@example.com")
+        self.assertEqual(calls.get("manually_edited"), 1)
+
+    @patch("frappe.db.commit")
+    @patch("zkteco_attendance.zkteco_attendance.doctype.manual_checkin_request.manual_checkin_request.frappe.delete_doc")
+    @patch("zkteco_attendance.zkteco_attendance.doctype.manual_checkin_request.manual_checkin_request.frappe.db.exists",
+           return_value=True)
+    def test_on_cancel_without_snapshot_deletes(self, mock_exists, mock_delete, mock_commit):
+        """An "Edit" request with no snapshot falls back to deleting the checkin."""
+        doc = self._cancelled_doc(request_type="Edit", applied_checkin="CHK-OLD-001")
+        doc.on_cancel()
+
+        mock_delete.assert_called_once_with(
+            "Employee Checkin", "CHK-OLD-001",
+            ignore_permissions=True, force=1)
+
+    @patch("frappe.db.commit")
+    @patch("zkteco_attendance.zkteco_attendance.doctype.manual_checkin_request.manual_checkin_request.frappe.delete_doc")
+    @patch("zkteco_attendance.zkteco_attendance.doctype.manual_checkin_request.manual_checkin_request.frappe.db.exists",
+           return_value=False)
+    def test_on_cancel_without_applied_checkin_is_noop(self, mock_exists, mock_delete, mock_commit):
+        """Cancelling a request with no applied check-in does nothing."""
+        doc = self._cancelled_doc(applied_checkin=None)
+        doc.on_cancel()
+
+        mock_delete.assert_not_called()
+
+    @patch("frappe.db.commit")
+    @patch("zkteco_attendance.zkteco_attendance.doctype.manual_checkin_request.manual_checkin_request.frappe.delete_doc")
+    @patch("zkteco_attendance.zkteco_attendance.doctype.manual_checkin_request.manual_checkin_request.frappe.db.exists",
+           return_value=False)
+    def test_on_cancel_missing_checkin_is_noop(self, mock_exists, mock_delete, mock_commit):
+        """Cancelling when the applied check-in was already deleted does nothing."""
+        doc = self._cancelled_doc(applied_checkin="CHK-GONE-001")
+        doc.on_cancel()
+
+        mock_delete.assert_not_called()
+
+    @patch("zkteco_attendance.zkteco_attendance.doctype.manual_checkin_request.manual_checkin_request.frappe.delete_doc")
+    @patch("frappe.db.commit")
+    @patch("frappe.db.set_value")
+    @patch("zkteco_attendance.zkteco_attendance.utils.has_column", return_value=False)
+    @patch("zkteco_attendance.zkteco_attendance.doctype.manual_checkin_request.manual_checkin_request.frappe.db.exists",
+           return_value=True)
+    def test_on_cancel_corrupt_snapshot_does_nothing(self, mock_exists, mock_has_column,
+                                                     mock_set_value, mock_commit, mock_delete):
+        """A corrupt snapshot string reverts nothing and deletes nothing."""
+        doc = self._cancelled_doc(request_type="Edit", applied_checkin="CHK-OLD-001")
+        doc.original_checkin_data = "not-json{{"
+        doc.on_cancel()
+
+        mock_set_value.assert_not_called()
+        mock_delete.assert_not_called()
 
 
 class TestManualCheckinRequestValidate(unittest.TestCase):

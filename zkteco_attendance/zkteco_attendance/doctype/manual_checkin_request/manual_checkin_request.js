@@ -23,6 +23,25 @@ frappe.ui.form.on("Manual Checkin Request", {
                     true
                 );
             }
+            if (frm.doc.original_checkin_data) {
+                frm.dashboard.add_comment(
+                    __("Cancelling this request will restore the check-in to its original values."),
+                    "orange",
+                    true
+                );
+            } else if (frm.doc.applied_checkin) {
+                frm.dashboard.add_comment(
+                    __("Cancelling this request will delete the check-in it created."),
+                    "orange",
+                    true
+                );
+            }
+        } else if (frm.doc.docstatus === 2) {
+            frm.dashboard.add_comment(
+                __("This request was cancelled; the employee check-in has been reverted."),
+                "red",
+                true
+            );
         }
     }
 

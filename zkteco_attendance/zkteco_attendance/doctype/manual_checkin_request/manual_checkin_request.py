@@ -7,9 +7,16 @@ Daily Checkins page (Add / Edit buttons) and the Attendance Summary
 "Add Check-in" button; the check-in itself only happens on submit, so
 requests can be reviewed before they take effect.
 """
+import json
+
 import frappe
 from frappe import _
 from frappe.model.document import Document
+
+# Employee Checkin fields captured before an "Edit" request is applied, so
+# cancelling the request can restore the original values. Columns that may
+# not exist (pre-patch databases) are skipped via has_column.
+SNAPSHOT_FIELDS = ("is_overtime", "zk_remark", "manually_edited", "edited_by", "edited_at")
 
 
 class ManualCheckinRequest(Document):
@@ -54,6 +61,12 @@ class ManualCheckinRequest(Document):
                 and frappe.db.exists("Employee Checkin", self.checkin_name):
             existing_name = self.checkin_name
 
+        # Capture the original values before they are overwritten, so that
+        # cancelling this request can restore the check-in exactly as it was.
+        snapshot = None
+        if existing_name:
+            snapshot = self._snapshot_original_checkin(existing_name)
+
         result = save_manual_checkin_record(
             employee=self.employee,
             checkin_time=checkin_time,
@@ -64,3 +77,72 @@ class ManualCheckinRequest(Document):
         )
 
         self.db_set("applied_checkin", result["name"], update_modified=False)
+        if snapshot:
+            self.db_set("original_checkin_data", json.dumps(snapshot), update_modified=False)
+
+    def _snapshot_original_checkin(self, checkin_name):
+        """Return the current values of the check-in being edited.
+
+        Returns a plain dict (JSON-safe) or None if the row cannot be read.
+        """
+        from zkteco_attendance.zkteco_attendance.utils import has_column
+
+        fields = ["time", "log_type"] + [
+            f for f in SNAPSHOT_FIELDS if has_column("Employee Checkin", f)
+        ]
+        values = frappe.db.get_value(
+            "Employee Checkin", checkin_name, fields, as_dict=True)
+        if not values:
+            return None
+
+        snapshot = {}
+        for field in fields:
+            value = values.get(field)
+            if value is None:
+                snapshot[field] = None
+            else:
+                # Datetimes / times are not JSON serializable; store strings.
+                snapshot[field] = str(value)
+        return snapshot
+
+    def on_cancel(self):
+        """Revert the check-in applied by this request.
+
+        - "Edit" requests: restore the original values captured on submit.
+        - "New" requests (and "Edit" requests whose target check-in had
+          disappeared at submit time): the created Employee Checkin is
+          deleted.
+        """
+        if not self.applied_checkin:
+            return
+
+        if not frappe.db.exists("Employee Checkin", self.applied_checkin):
+            return
+
+        if self.original_checkin_data:
+            self._restore_original_checkin()
+        else:
+            # Nothing to restore: the applied check-in was created by this
+            # request, so remove it entirely.
+            frappe.delete_doc(
+                "Employee Checkin", self.applied_checkin,
+                ignore_permissions=True, force=1)
+
+        frappe.db.commit()
+
+    def _restore_original_checkin(self):
+        """Write the snapshotted pre-edit values back onto the check-in."""
+        from zkteco_attendance.zkteco_attendance.utils import has_column
+
+        try:
+            snapshot = json.loads(self.original_checkin_data)
+        except (TypeError, ValueError):
+            return
+
+        if not isinstance(snapshot, dict):
+            return
+
+        for field, value in snapshot.items():
+            if field not in ("time", "log_type") and not has_column("Employee Checkin", field):
+                continue
+            frappe.db.set_value("Employee Checkin", self.applied_checkin, field, value)

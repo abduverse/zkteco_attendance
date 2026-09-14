@@ -9,7 +9,7 @@
   "employee", "employee_name", "column_break_1", "company", "attendance_summary",
   "section_checkin", "request_type", "checkin_date", "checkin_time", "column_break_2", "log_type", "is_overtime",
   "section_edit", "checkin_name", "request_remarks",
-  "section_result", "applied_checkin"
+  "section_result", "applied_checkin", "original_checkin_data"
  ],
  "fields": [
   {
@@ -125,11 +125,19 @@
    "label": "Applied Check-in",
    "options": "Employee Checkin",
    "read_only": 1
+  },
+  {
+   "description": "Original values of the edited check-in, captured when the request is submitted so cancelling the request can restore them.",
+   "fieldname": "original_checkin_data",
+   "fieldtype": "Long Text",
+   "label": "Original Check-in Data",
+   "no_copy": 1,
+   "read_only": 1
   }
  ],
  "is_submittable": 1,
  "links": [],
- "modified": "2026-09-09 00:00:00.000000",
+ "modified": "2026-09-14 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Zkteco Attendance",
  "name": "Manual Checkin Request",
@@ -172,6 +180,16 @@
    "delete": 0,
    "read": 1,
    "role": "Checkin Editor",
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "amend": 0,
+   "cancel": 1,
+   "create": 0,
+   "delete": 0,
+   "read": 1,
+   "role": "Checkin Request Approver",
    "submit": 1,
    "write": 1
   }

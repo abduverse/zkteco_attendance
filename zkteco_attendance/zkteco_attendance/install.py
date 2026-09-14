@@ -10,6 +10,7 @@ def after_install():
     """Run after app is installed via bench install-app."""
     _create_biometric_device_manager_role()
     _create_checkin_editor_role()
+    _create_checkin_request_approver_role()
     _add_employee_checkin_device_field()
     _add_employee_checkin_zk_uid_field()
     _add_employee_checkin_overtime_field()
@@ -43,6 +44,18 @@ def _create_checkin_editor_role():
         role = frappe.get_doc({
             "doctype": "Role",
             "role_name": "Checkin Editor",
+            "desk_access": 1,
+            "is_custom": 1,
+        })
+        role.insert(ignore_permissions=True)
+
+
+def _create_checkin_request_approver_role():
+    """Approves (submits) or cancels Manual Checkin Requests."""
+    if not frappe.db.exists("Role", "Checkin Request Approver"):
+        role = frappe.get_doc({
+            "doctype": "Role",
+            "role_name": "Checkin Request Approver",
             "desk_access": 1,
             "is_custom": 1,
         })
