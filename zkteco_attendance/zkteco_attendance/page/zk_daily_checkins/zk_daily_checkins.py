@@ -7,7 +7,7 @@ from frappe.utils import cstr, flt, getdate
 @frappe.whitelist()
 def get_data(attendance_summary=None, from_date=None, to_date=None,
              employee_list=None, company=None, biometric_device=None,
-             filter_employee=None):
+             filter_employee=None, filter_project=None):
     from zkteco_attendance.zkteco_attendance.api.endpoints import get_daily_checkins
     return get_daily_checkins(
         attendance_summary=attendance_summary,
@@ -17,6 +17,7 @@ def get_data(attendance_summary=None, from_date=None, to_date=None,
         company=company,
         biometric_device=biometric_device,
         filter_employee=filter_employee,
+        filter_project=filter_project,
     )
 
 
@@ -48,7 +49,7 @@ def toggle_ignore_checkin(checkin_name):
 @frappe.whitelist()
 def get_invalid_days(attendance_summary=None, from_date=None, to_date=None,
                      employee_list=None, company=None, biometric_device=None,
-                     filter_employee=None):
+                     filter_employee=None, filter_project=None):
     """
     Return only the employees whose daily breakdown contains "Invalid" days,
     together with the exact invalid dates and counts.
@@ -66,6 +67,7 @@ def get_invalid_days(attendance_summary=None, from_date=None, to_date=None,
         company=company,
         biometric_device=biometric_device,
         filter_employee=filter_employee,
+        filter_project=filter_project,
     )
 
     invalids = []
@@ -120,7 +122,7 @@ def get_employee_shift_info(employee, work_date=None):
 @frappe.whitelist()
 def download_pdf(attendance_summary=None, from_date=None, to_date=None,
                  employee_list=None, company=None, biometric_device=None,
-                 filter_employee=None):
+                 filter_employee=None, filter_project=None):
     """
     Render the currently filtered Daily Checkins view as a styled PDF and
     stream it to the browser as a file download.
@@ -139,6 +141,7 @@ def download_pdf(attendance_summary=None, from_date=None, to_date=None,
         company=company,
         biometric_device=biometric_device,
         filter_employee=filter_employee,
+        filter_project=filter_project,
     )
 
     pdf = get_pdf(_render_pdf_html(data))
@@ -160,7 +163,7 @@ def download_pdf(attendance_summary=None, from_date=None, to_date=None,
 @frappe.whitelist()
 def download_excel(attendance_summary=None, from_date=None, to_date=None,
                    employee_list=None, company=None, biometric_device=None,
-                   filter_employee=None):
+                   filter_employee=None, filter_project=None):
     """
     Stream the currently filtered Daily Checkins view as an Excel workbook.
     Accepts the exact same arguments as `get_data`, so the workbook always
@@ -176,6 +179,7 @@ def download_excel(attendance_summary=None, from_date=None, to_date=None,
         company=company,
         biometric_device=biometric_device,
         filter_employee=filter_employee,
+        filter_project=filter_project,
     )
 
     xlsx = _build_excel_workbook(data)

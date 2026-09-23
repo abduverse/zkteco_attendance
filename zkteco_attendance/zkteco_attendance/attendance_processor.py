@@ -1044,7 +1044,8 @@ def get_employee_daily_breakdown(employee, from_date, to_date,
 
 
 def get_daily_checkins_data(attendance_summary=None, from_date=None, to_date=None,
-                            employee_list=None, company=None, biometric_device=None):
+                            employee_list=None, company=None, biometric_device=None,
+                            project=None):
     """
     Build the full payload for the Daily Checkins dashboard.
 
@@ -1084,6 +1085,8 @@ def get_daily_checkins_data(attendance_summary=None, from_date=None, to_date=Non
                 filters["company"] = company
             if biometric_device:
                 filters["zk_biometric_device"] = biometric_device
+            if project:
+                filters["project"] = project
             employee_list = [
                 e["name"]
                 for e in frappe.get_all("Employee", filters=filters, fields=["name"])
@@ -1121,6 +1124,31 @@ def get_daily_checkins_data(attendance_summary=None, from_date=None, to_date=Non
             )
             device_emps = {r["name"] for r in device_rows}
             employee_list = [e for e in employee_list if e in device_emps]
+
+        if not employee_list:
+            return {
+                "attendance_summary": attendance_summary or "",
+                "company": company or "",
+                "from_date": from_date or "",
+                "to_date": to_date or "",
+                "employees": [],
+            }
+
+    # ── Project filter ────────────────────────────────────────────────────
+    # Narrows the results to employees whose Project (Employee master) matches
+    # the selected project — the same field the Attendance Summary
+    # "Fetch Employees" dialog filters on. Explicit list order is preserved.
+    if project and employee_list:
+        project_rows = frappe.get_all(
+            "Employee",
+            filters={
+                "name": ["in", employee_list],
+                "project": project,
+            },
+            fields=["name"],
+        )
+        project_emps = {r["name"] for r in project_rows}
+        employee_list = [e for e in employee_list if e in project_emps]
 
         if not employee_list:
             return {

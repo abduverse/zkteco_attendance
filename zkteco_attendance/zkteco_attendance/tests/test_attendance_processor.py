@@ -1207,5 +1207,199 @@ class TestDailyCheckinsBiometricDeviceFilter(unittest.TestCase):
         mock_fetch.assert_not_called()
 
 
+class TestDailyCheckinsProjectFilter(unittest.TestCase):
+    """
+    The Project dropdown on the Daily Checkins page must narrow the results
+    to employees whose Project (Employee master) matches — the same field the
+    Attendance Summary "Fetch Employees" dialog filters on — whether the page
+    was opened from a summary or standalone.
+    """
+
+    def _make_summary_doc(self, employees):
+        """Fake Attendance Summary doc whose details mimic child-table rows."""
+        from types import SimpleNamespace
+
+        details = []
+        for emp in employees:
+            details.append(SimpleNamespace(
+                employee=emp,
+                employee_name=emp.replace("-", " "),
+                department="Dept",
+                designation="",
+                zk_biometric_device="",
+                attendance_device_id="",
+            ))
+        return SimpleNamespace(
+            name="SUM-0001",
+            from_date=date(2026, 8, 1),
+            to_date=date(2026, 8, 31),
+            company="Acme",
+            details=details,
+            working_hours_method="First IN - Last OUT",
+            missing_checkin_action="Mark as Invalid",
+            shift_type=None,
+        )
+
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_shift_for_employee")
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_employee_daily_breakdown")
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.fetch_checkins")
+    @patch("frappe.get_all")
+    @patch("frappe.get_doc")
+    def test_summary_mode_filters_employees_by_project(
+            self, mock_get_doc, mock_get_all, mock_fetch, mock_breakdown, mock_shift):
+        """From an Attendance Summary, only employees on the selected project remain."""
+        from zkteco_attendance.zkteco_attendance.attendance_processor import get_daily_checkins_data
+
+        mock_get_doc.return_value = self._make_summary_doc(["EMP-A", "EMP-B", "EMP-C"])
+        mock_fetch.return_value = {}  # no check-ins needed for the filter assertions
+        mock_breakdown.return_value = []
+        mock_shift.return_value = None
+        # Serves both the project lookup and the emp_info lookup
+        mock_get_all.return_value = [
+            {"name": "EMP-A", "employee_name": "EMP A", "department": "Dept",
+             "designation": "", "zk_biometric_device": "", "attendance_device_id": ""},
+            {"name": "EMP-C", "employee_name": "EMP C", "department": "Dept",
+             "designation": "", "zk_biometric_device": "", "attendance_device_id": ""},
+        ]
+
+        result = get_daily_checkins_data(
+            attendance_summary="SUM-0001",
+            from_date="2026-08-01",
+            to_date="2026-08-31",
+            project="PRJ-1",
+        )
+
+        # The project lookup must query Employee with the project filter
+        project_call = next(
+            c for c in mock_get_all.call_args_list
+            if c.kwargs.get("filters", {}).get("project") == "PRJ-1"
+        )
+        self.assertEqual(project_call.kwargs["filters"]["name"], ["in", ["EMP-A", "EMP-B", "EMP-C"]])
+
+        emp_ids = [e["employee"] for e in result["employees"]]
+        self.assertEqual(emp_ids, ["EMP-A", "EMP-C"])
+        # Check-in rows are only fetched for the filtered employees
+        mock_fetch.assert_called_once()
+        self.assertEqual(mock_fetch.call_args[0][0], ["EMP-A", "EMP-C"])
+        by_emp = {e["employee"]: e for e in result["employees"]}
+        self.assertEqual(by_emp["EMP-A"]["fullname"], "EMP A")
+        self.assertEqual(by_emp["EMP-C"]["fullname"], "EMP C")
+
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_shift_for_employee")
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_employee_daily_breakdown")
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.fetch_checkins")
+    @patch("frappe.get_all")
+    def test_standalone_explicit_list_filters_employees_by_project(
+            self, mock_get_all, mock_fetch, mock_breakdown, mock_shift):
+        """Standalone with an explicit employee list: project filter intersects the list."""
+        from zkteco_attendance.zkteco_attendance.attendance_processor import get_daily_checkins_data
+
+        emp_projects = {"EMP-A": "PRJ-1", "EMP-B": "PRJ-2"}
+
+        def fake_get_all(doctype, filters=None, fields=None, **kwargs):
+            if doctype != "Employee":
+                return []
+            names = filters["name"][1]
+            if "project" in filters:
+                selected = [n for n in names if emp_projects.get(n) == filters["project"]]
+            else:
+                selected = list(names)
+            if fields == ["name"]:
+                return [{"name": n} for n in selected]
+            return [{"name": n, "employee_name": n.replace("-", " "),
+                     "department": "Dept", "designation": "",
+                     "zk_biometric_device": "", "attendance_device_id": "1"}
+                    for n in selected]
+
+        mock_get_all.side_effect = fake_get_all
+        mock_fetch.return_value = {}
+        mock_breakdown.return_value = []
+        mock_shift.return_value = None
+
+        result = get_daily_checkins_data(
+            attendance_summary=None,
+            from_date="2026-08-01",
+            to_date="2026-08-31",
+            employee_list=["EMP-A", "EMP-B"],
+            project="PRJ-1",
+        )
+
+        emp_ids = [e["employee"] for e in result["employees"]]
+        self.assertEqual(emp_ids, ["EMP-A"])
+        self.assertEqual(result["employees"][0]["fullname"], "EMP A")
+
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_shift_for_employee")
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_employee_daily_breakdown")
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.fetch_checkins")
+    @patch("frappe.get_all")
+    def test_standalone_autofetch_applies_project_filter(
+            self, mock_get_all, mock_fetch, mock_breakdown, mock_shift):
+        """Standalone without an explicit list: the auto-fetch query includes the project."""
+        from zkteco_attendance.zkteco_attendance.attendance_processor import get_daily_checkins_data
+
+        emp_projects = {"EMP-A": "PRJ-1", "EMP-B": "PRJ-2", "EMP-C": "PRJ-1"}
+
+        def fake_get_all(doctype, filters=None, fields=None, **kwargs):
+            if doctype != "Employee":
+                return []
+            if "name" in filters:
+                names = filters["name"][1]
+                if "project" in filters:
+                    selected = [n for n in names if emp_projects.get(n) == filters["project"]]
+                else:
+                    selected = list(names)
+            else:
+                # Auto-fetch query — the project filter must be included
+                self.assertIn("project", filters)
+                selected = [n for n, p in emp_projects.items() if p == filters["project"]]
+            if fields == ["name"]:
+                return [{"name": n} for n in selected]
+            return [{"name": n, "employee_name": n.replace("-", " "),
+                     "department": "Dept", "designation": "",
+                     "zk_biometric_device": "", "attendance_device_id": "1"}
+                    for n in selected]
+
+        mock_get_all.side_effect = fake_get_all
+        mock_fetch.return_value = {}
+        mock_breakdown.return_value = []
+        mock_shift.return_value = None
+
+        result = get_daily_checkins_data(
+            attendance_summary=None,
+            from_date="2026-08-01",
+            to_date="2026-08-31",
+            project="PRJ-1",
+        )
+
+        emp_ids = [e["employee"] for e in result["employees"]]
+        self.assertEqual(emp_ids, ["EMP-A", "EMP-C"])
+
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_shift_for_employee")
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_employee_daily_breakdown")
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.fetch_checkins")
+    @patch("frappe.get_all")
+    @patch("frappe.get_doc")
+    def test_summary_mode_no_project_match_returns_empty_payload(
+            self, mock_get_doc, mock_get_all, mock_fetch, mock_breakdown, mock_shift):
+        """No employee on the selected project -> empty employees, not an error."""
+        from zkteco_attendance.zkteco_attendance.attendance_processor import get_daily_checkins_data
+
+        mock_get_doc.return_value = self._make_summary_doc(["EMP-B"])
+        mock_fetch.return_value = {}
+        mock_breakdown.return_value = []
+        mock_shift.return_value = None
+        mock_get_all.return_value = []
+
+        result = get_daily_checkins_data(
+            attendance_summary="SUM-0001",
+            from_date="2026-08-01",
+            to_date="2026-08-31",
+            project="PRJ-1",
+        )
+
+        self.assertEqual(result["employees"], [])
+        mock_fetch.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

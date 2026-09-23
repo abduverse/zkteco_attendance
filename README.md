@@ -20,7 +20,7 @@ pip install pyzk --break-system-packages
 
 ```bash
 cd frappe-bench
-bench get-app https://github.com/abducodespro/zkteco_attendance
+bench get-app https://github.com/abduverse/zkteco_attendance
 bench --site frappe.com install-app zkteco_attendance
 bench --site frappe.com migrate
 bench restart
@@ -263,6 +263,11 @@ per-employee, per-day breakdown of raw punches.
   Attendance ID set, Status Active) are fetched automatically.
 - Optionally link an **Attendance Summary** to pre-fill the dates and use
   exactly the employees in that summary's Details.
+- **Filters**: **Biometric Device**, **Employee**, and **Project** narrow the
+  report. **Project** matches the employee's Project on the Employee master
+  (the same field the Attendance Summary **Fetch Employees** dialog filters
+  on) and can be combined with the other filters; downloads and
+  **Check invalids** always respect the active filters.
 - Each employee appears as a collapsible card with a running OT total.
   Expanding it shows a table with one row per day: date, weekday, status
   (Present / Half Day / Absent / Invalid / Manual Review / Weekly Off /

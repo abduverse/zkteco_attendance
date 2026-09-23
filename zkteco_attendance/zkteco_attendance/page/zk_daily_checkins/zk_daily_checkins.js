@@ -19,6 +19,7 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
         employee_list:    [],
         biometric_device: null,
         filter_employee:  null,
+        filter_project:   null,
         can_edit_checkins: frappe.user_roles.includes("Checkin Editor"),
     };
 
@@ -28,14 +29,17 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
             <div class="row" style="margin-bottom:8px;">
                 <div class="col-sm-2" id="zk-fd"></div>
                 <div class="col-sm-2" id="zk-td"></div>
-                <div class="col-sm-3" id="zk-summary-wrap">
+                <div class="col-sm-2" id="zk-summary-wrap">
                     <div id="zk-summary"></div>
                 </div>
-                <div class="col-sm-3" id="zk-device-wrap">
+                <div class="col-sm-2" id="zk-device-wrap">
                     <div id="zk-device"></div>
                 </div>
                 <div class="col-sm-2" id="zk-emp-wrap">
                     <div id="zk-emp"></div>
+                </div>
+                <div class="col-sm-2" id="zk-project-wrap">
+                    <div id="zk-project"></div>
                 </div>
             </div>
             <div class="row">
@@ -134,6 +138,23 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
         render_input: true,
     });
     emp_ctrl.refresh();
+
+    // Project filter — narrows employees by their Project (Employee master),
+    // the same field the Attendance Summary "Fetch Employees" dialog filters on.
+    const project_ctrl = frappe.ui.form.make_control({
+        df: {
+            fieldtype: "Link",
+            fieldname: "filter_project",
+            label: __("Project"),
+            options: "Project",
+            change() {
+                state.filter_project = project_ctrl.get_value();
+            },
+        },
+        parent: $filterWrap.find("#zk-project"),
+        render_input: true,
+    });
+    project_ctrl.refresh();
 
     const $body = $(`<div class="zk-daily-body" style="margin:18px;"></div>`).appendTo(page.main);
 
@@ -454,10 +475,12 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
         summary_ctrl.set_value("");
         device_ctrl.set_value("");
         emp_ctrl.set_value("");
+        project_ctrl.set_value("");
         state.attendance_summary = null;
         state.employee_list = [];
         state.biometric_device = null;
         state.filter_employee  = null;
+        state.filter_project   = null;
         state.data = null;
         render_empty_state();
     });
@@ -482,6 +505,7 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
             employee_list:      state.employee_list.length ? JSON.stringify(state.employee_list) : "",
             biometric_device:   state.biometric_device || "",
             filter_employee:    state.filter_employee || "",
+            filter_project:     state.filter_project || "",
         };
         const query = Object.keys(payload)
             .filter(k => payload[k])
@@ -511,6 +535,7 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
             employee_list:      state.employee_list.length ? JSON.stringify(state.employee_list) : "",
             biometric_device:   state.biometric_device || "",
             filter_employee:    state.filter_employee || "",
+            filter_project:     state.filter_project || "",
         };
         const query = Object.keys(payload)
             .filter(k => payload[k])
@@ -539,6 +564,7 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                 employee_list:      state.employee_list.length ? JSON.stringify(state.employee_list) : null,
                 biometric_device:   state.biometric_device || null,
                 filter_employee:    state.filter_employee || null,
+                filter_project:     state.filter_project || null,
             },
             freeze: true,
             freeze_message: __("Checking invalid days…"),
@@ -1092,6 +1118,7 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                 employee_list:      state.employee_list.length ? JSON.stringify(state.employee_list) : null,
                 biometric_device:   state.biometric_device || null,
                 filter_employee:    state.filter_employee || null,
+                filter_project:     state.filter_project || null,
             },
             callback(r) {
                 if (!r.message) { render_empty_state(); return; }

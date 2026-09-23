@@ -168,7 +168,7 @@ def get_latest_sync_log(device_name):
 @frappe.whitelist()
 def get_daily_checkins(attendance_summary=None, from_date=None, to_date=None,
                        employee_list=None, company=None, biometric_device=None,
-                       filter_employee=None):
+                       filter_employee=None, filter_project=None):
     """
     Return per-employee, per-day checkin breakdown.
     Accepts either an Attendance Summary name OR a direct date range + employee list.
@@ -199,6 +199,7 @@ def get_daily_checkins(attendance_summary=None, from_date=None, to_date=None,
         employee_list=employee_list or None,
         company=company,
         biometric_device=biometric_device,
+        project=filter_project,
     )
 
 
