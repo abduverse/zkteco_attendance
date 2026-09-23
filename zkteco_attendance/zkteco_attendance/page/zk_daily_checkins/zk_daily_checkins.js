@@ -826,6 +826,8 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                     <span class="zk-ot-chip zk-ot-holiday">H: ${__("Holiday OT")}</span>
                     <span class="zk-ot-chip zk-ot-late">L-EN: ${__("Late Entry")}</span>
                     <span class="zk-ot-chip zk-ot-early">E-EX: ${__("Early Exit")}</span>
+                    <span class="zk-ot-chip zk-ot-day">WD: ${__("Working Days")}</span>
+                    <span class="zk-ot-chip zk-ot-holiday">AD: ${__("Absent Days")}</span>
                     <span class="zk-ot-chip zk-ot-night">○: ${__("Ignore Button")}</span>
                     <span class="zk-ot-chip zk-ot-night">✎: ${__("Manual Edit Button")}</span>
                 </div>
@@ -838,6 +840,25 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
             const nightOt  = (emp.days||[]).reduce((s,d) => s+(d.night_ot_hours||0), 0);
             const weekendOt = (emp.days||[]).reduce((s,d) => s+(d.weekend_ot_hours||0), 0);
             const holidayOt = (emp.days||[]).reduce((s,d) => s+(d.holiday_ot_hours||0), 0);
+            // Working / absent days — counted the same way the attendance
+            // processor scores them: Present = 1, Half Day = 0.5, Absent = 1.
+            // Sundays (weekly rest) are excluded; public holidays count as
+            // paid days off, so they add to working days.
+            let workingDays = 0, absentDays = 0;
+            (emp.days||[]).forEach(d => {
+                if (d.is_weekend) return;               // Sunday weekly rest — never counts
+                if (d.is_holiday) { workingDays += 1; return; }  // paid day off
+                if (d.status === "Present")      workingDays += 1;
+                else if (d.status === "Half Day") { workingDays += 0.5; absentDays += 0.5; }
+                else if (d.status === "Absent")   absentDays += 1;
+            });
+            const statsLabel = `
+                <span class="zk-ot-chip zk-ot-day" title="${__("Working Days (Half Day counts as 0.5)")}" style="border: 1px solid #38684e; background-color: #8bf8c2; border-radius: 4px; padding: 2px 4px;">
+                    ${__("WD")}: ${workingDays % 1 ? workingDays.toFixed(1) : workingDays}
+                </span>
+                <span class="zk-ot-chip zk-ot-holiday" title="${__("Absent Days")}" style="border: 1px solid #683848; background-color: #f88bc5; border-radius: 4px; padding: 2px 4px;">
+                    ${__("AD")}: ${absentDays % 1 ? absentDays.toFixed(1) : absentDays}
+                </span>`;
             const otLabel  = totalOt
                 ? `<span class="text-warning" style="margin-right:10px;" title="${__("Day OT")}: ${dayOt.toFixed(2)}h | ${__("Night OT")}: ${nightOt.toFixed(2)}h | ${__("Weekend OT")}: ${weekendOt.toFixed(2)}h | ${__("Holiday OT")}: ${holidayOt.toFixed(2)}h">
                        ${__("OT")}: ${totalOt.toFixed(2)}h
@@ -864,7 +885,7 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                             ${emp.department ? `<span class="text-muted" style="margin-left:8px; border:1px solid #e4e3e3; border-radius:var(--border-radius); padding:2px 4px;"><b>Department:</b> ${frappe.utils.escape_html(emp.department)}</span>` : ""}
                             <span class="text-muted" style="margin-left:8px; border:1px solid #e4e3e3; border-radius:var(--border-radius); padding:2px 4px;">${deviceInfo.join("")}</span>
                         </div>
-                        <div class="text-muted">${otLabel}<i class="fa fa-chevron-${isOpen?"up":"down"}"></i></div>
+                        <div class="text-muted">${statsLabel}${otLabel}<i class="fa fa-chevron-${isOpen?"up":"down"}"></i></div>
                     </div>
                     <div class="zk-emp-card-body" style="display:${isOpen?"block":"none"};padding-top:4px;">
                         ${render_employee_table(emp, data.attendance_summary)}

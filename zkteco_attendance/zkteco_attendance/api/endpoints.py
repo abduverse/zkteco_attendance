@@ -66,6 +66,138 @@ def get_pull_progress(device_name, run_id=None):
 
 
 @frappe.whitelist()
+def get_device_users(device_name):
+    """
+    Return the users enrolled on a biometric device, annotated with the
+    ERPNext Employee currently mapped to each user_id (via
+    attendance_device_id), so the Biometric Device form's
+    "Browse Employees On Device" dialog can show and edit the mapping.
+    """
+    frappe.only_for(["System Manager", "HR Manager", "Biometric Device Manager"])
+
+    device = frappe.get_doc("Biometric Device", device_name)
+
+    from zkteco_attendance.zkteco_attendance.zk_client import get_device_users as fetch_users
+
+    users = fetch_users(device_name)
+
+    # Which device user_ids are already mapped to an Employee (of this
+    # device's company) through attendance_device_id?
+    mapped_by_id = {}
+    if users:
+        user_ids = list({u["user_id"] for u in users})
+        rows = frappe.get_all(
+            "Employee",
+            filters={
+                "attendance_device_id": ["in", user_ids],
+                "zk_biometric_device": device.name,
+                "status": "Active",
+            },
+            fields=["name", "employee_name", "attendance_device_id"],
+        )
+        for row in rows:
+            mapped_by_id[str(row.attendance_device_id)] = row
+
+    for u in users:
+        emp = mapped_by_id.get(u["user_id"])
+        u["employee"] = emp.name if emp else ""
+        u["employee_name"] = emp.employee_name if emp else ""
+
+    return {"success": True, "users": users, "count": len(users)}
+
+
+@frappe.whitelist()
+def map_device_employees(device_name, mappings):
+    """
+    Save employee mappings from the "Browse Employees On Device" dialog.
+
+    mappings is a list of {user_id, employee} dicts (possibly a JSON string
+    when sent from JS). For every device user_id the Employee's
+    attendance_device_id is set to that user_id and zk_biometric_device is
+    set to this device — the combination the sync engine requires to match
+    a punch to an employee. Passing employee="" clears the mapping for
+    that device user. Previously-mapped employees of this device whose
+    user_id is no longer present in mappings are unmapped (their
+    attendance_device_id is cleared) so stale mappings never linger.
+    """
+    frappe.only_for(["System Manager", "HR Manager", "Biometric Device Manager"])
+
+    import json as _json
+
+    device = frappe.get_doc("Biometric Device", device_name)
+
+    if isinstance(mappings, str):
+        try:
+            mappings = _json.loads(mappings)
+        except Exception:
+            frappe.throw(_("Invalid mappings payload."))
+
+    if not isinstance(mappings, list):
+        frappe.throw(_("Mappings must be a list of user_id / employee pairs."))
+
+    # ── Validate & normalise ────────────────────────────────────────────
+    seen_ids = set()
+    employees_to_map = {}   # employee -> user_id
+    ids_to_clear = set()    # user_ids explicitly unmapped
+
+    for m in mappings:
+        if not isinstance(m, dict) or not m.get("user_id"):
+            frappe.throw(_("Each mapping must include a device user_id."))
+        user_id = str(m["user_id"])
+        employee = (m.get("employee") or "").strip()
+
+        if user_id in seen_ids:
+            frappe.throw(_("Duplicate device user_id in mappings: {0}").format(user_id))
+        seen_ids.add(user_id)
+
+        if not employee:
+            ids_to_clear.add(user_id)
+            continue
+
+        if not frappe.db.exists("Employee", employee):
+            frappe.throw(_("Employee {0} does not exist.").format(employee))
+
+        emp_company = frappe.db.get_value("Employee", employee, "company")
+        if device.company and emp_company != device.company:
+            frappe.throw(
+                _("Employee {0} belongs to company {1}, but the device is set up for {2}.").format(
+                    employee, emp_company, device.company
+                )
+            )
+
+        employees_to_map[employee] = user_id
+
+    # ── Unmap device ids no longer mapped (stale mappings cleanup) ─────
+    if seen_ids:
+        stale = frappe.get_all(
+            "Employee",
+            filters={
+                "zk_biometric_device": device.name,
+                "attendance_device_id": ["in", list(seen_ids)],
+            },
+            fields=["name"],
+        )
+        for row in stale:
+            if row.name not in employees_to_map:
+                frappe.db.set_value("Employee", row.name, "attendance_device_id", None)
+
+    # ── Apply new mappings (and re-maps) ───────────────────────────────
+    for employee, user_id in employees_to_map.items():
+        frappe.db.set_value("Employee", employee, {
+            "attendance_device_id": user_id,
+            "zk_biometric_device": device.name,
+        }, update_modified=True)
+
+    frappe.db.commit()
+
+    return {
+        "success": True,
+        "mapped": len(employees_to_map),
+        "unmapped": len(ids_to_clear),
+    }
+
+
+@frappe.whitelist()
 def sync_device(device_name):
     """
     Trigger a background sync for a single device (legacy/queue-based path,

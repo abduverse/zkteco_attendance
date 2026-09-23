@@ -101,6 +101,36 @@ def test_device_connection(device_name):
     return result
 
 
+def get_device_users(device_name):
+    """
+    Fetch users enrolled on a ZKTeco device (uid, user_id, name, privilege).
+    Called from the Biometric Device form's "Browse Employees On Device"
+    dialog so users can be mapped to ERPNext Employees.
+    """
+    device = frappe.get_doc("Biometric Device", device_name)
+
+    conn = None
+    try:
+        conn, zk = get_zk_connection(device)
+        users = conn.get_users() or []
+
+        return [
+            {
+                "uid": u.uid,
+                "user_id": str(u.user_id),
+                "name": (u.name or "").strip(),
+                "privilege": u.privilege,
+            }
+            for u in users
+        ]
+    finally:
+        if conn:
+            try:
+                conn.disconnect()
+            except Exception:
+                pass
+
+
 def _adjust_for_clock_offset(timestamp, device_doc):
     """
     Most ZKTeco devices report attendance timestamps using the device's own

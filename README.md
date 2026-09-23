@@ -107,7 +107,8 @@ Create one or more **ZK Shift Type** records:
 
 ### 2.5 Assign shifts
 Use **ZK Shift Assignment** to assign a Shift Type to a group of employees
-for a date range (From Date / To Date, Status = Active).
+(Status = Active). An employee can have only one active assignment; set
+the assignment to Inactive (or delete it) to unassign.
 
 ---
 
@@ -152,11 +153,15 @@ attendance report for a date range:
 1. Create a new **Attendance Summary**, set **Company**, **From Date**,
    **To Date**, and optionally a default **Shift Type** (used as a fallback
    if an employee has no Shift Assignment).
-2. The **Processing Settings** section lets you override **Working Hours
-   Method** and **Missing Check-In/Out Action** for this summary; leave
-   blank to use each employee's shift settings.
+2. The **Processing Settings** section lets you override **Missing
+   Check-In/Out Action** for this summary; leave blank to use each
+   employee's shift settings. Working hours are always calculated with
+   each employee's own shift **Working Hours Method** (ZK Shift Type).
 3. Click **Fetch Employees** — choose to fetch all active employees, or
-   filter by Department / Designation / Project.
+   filter by Department / Designation / Project. The dialog's **Include
+   Only Mapped Employees** checkbox controls unmapped employees: checked,
+   they are not fetched at all; unchecked, they are fetched but marked as
+   *Do Not Process*.
 4. Click **Process Attendance**. This runs in the background; the form
    polls automatically and reloads when done.
 5. Each row in **Details** shows: Working Days, Absent Days, Half Days,
@@ -172,7 +177,7 @@ weekly rest day, and Saturday follows the shift's **Saturday Working Mode**
 (Full Day / Half Day / Off). Public holidays come from the employee's
 **Holiday List** (or the company default).
 
-**Working Hours Method**:
+**Working Hours Method** (from each employee's ZK Shift Type):
 - *First IN – Last OUT*: total span between the first and last punch of the
   day.
 - *Actual Pairs (IN-OUT)*: sums each matched IN→OUT pair (more accurate if

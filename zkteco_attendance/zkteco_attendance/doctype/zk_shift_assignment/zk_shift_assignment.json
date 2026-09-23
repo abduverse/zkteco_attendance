@@ -7,8 +7,6 @@
         "shift_type",
         "company",
         "column_break_1",
-        "from_date",
-        "to_date",
         "status",
         "section_employees",
         "employees"
@@ -32,20 +30,6 @@
         {
             "fieldname": "column_break_1",
             "fieldtype": "Column Break"
-        },
-        {
-            "fieldname": "from_date",
-            "fieldtype": "Date",
-            "label": "From Date",
-            "reqd": 1,
-            "in_list_view": 1
-        },
-        {
-            "fieldname": "to_date",
-            "fieldtype": "Date",
-            "label": "To Date",
-            "reqd": 1,
-            "in_list_view": 1
         },
         {
             "fieldname": "status",
@@ -103,7 +87,7 @@
             "role": "Biometric Device Manager"
         }
     ],
-    "sort_field": "from_date",
+    "sort_field": "modified",
     "allow_import": 1,
     "sort_order": "DESC",
     "track_changes": 1

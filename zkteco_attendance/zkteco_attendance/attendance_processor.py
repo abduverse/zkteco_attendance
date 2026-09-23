@@ -156,10 +156,11 @@ SHIFT_FIELDS = [
 
 def get_shift_for_employee(employee, work_date, default_shift_name=None):
     """
-    Return a ZK Shift Type doc (as dict) for employee on a given date, or None.
+    Return a ZK Shift Type doc (as dict) for employee, or None.
     Checks ZK Shift Assignment first, then falls back to default_shift_name.
+    An employee has at most one active assignment, so work_date is not used
+    for matching anymore (kept for backward compatibility with callers).
     """
-    work_date_str = str(work_date)
     columns = ", ".join("st.{0}".format(f) for f in SHIFT_FIELDS)
 
     result = frappe.db.sql("""
@@ -169,11 +170,8 @@ def get_shift_for_employee(employee, work_date, default_shift_name=None):
         JOIN `tabZK Shift Type` st ON st.name = sa.shift_type
         WHERE sae.employee = %s
           AND sa.status = 'Active'
-          AND sa.from_date <= %s
-          AND sa.to_date   >= %s
-        ORDER BY sa.from_date DESC
         LIMIT 1
-    """.format(columns=columns), (employee, work_date_str, work_date_str), as_dict=True)
+    """.format(columns=columns), (employee,), as_dict=True)
 
     if result:
         return result[0]
@@ -248,8 +246,7 @@ def fetch_checkins(employee_list, from_date, to_date):
     return grouped
 
 
-def group_checkins_by_date(checkins, shift, default_method="First IN - Last OUT",
-                            from_date=None, to_date=None):
+def group_checkins_by_date(checkins, shift, from_date=None, to_date=None):
     """
     Group a flat list of checkin dicts by attendance date.
 
@@ -717,7 +714,7 @@ def calc_overtime_hours(day_checkins, shift, total_hours, day_type="working",
 # Daily status classification
 # ─────────────────────────────────────────────────────────────────────────────
 
-def classify_day(day_checkins, shift, doc_method, doc_missing_action,
+def classify_day(day_checkins, shift, doc_missing_action,
                  is_saturday=False, day_type="working", work_date=None):
     """
     Returns a dict with attendance status, hours, and overtime breakdown.
@@ -742,7 +739,8 @@ def classify_day(day_checkins, shift, doc_method, doc_missing_action,
     """
     half_hours = flt(shift.get("half_day_hours") or 4)
     std_hours  = flt(shift.get("standard_working_hours") or 8)
-    method     = doc_method or shift.get("working_hours_method") or "First IN - Last OUT"
+    # Working hours method always comes from the employee's ZK Shift Type.
+    method     = shift.get("working_hours_method") or "First IN - Last OUT"
     lunch_break = flt(shift.get("lunch_break_hours") or 0)
 
     # Saturday overrides
@@ -843,7 +841,7 @@ def classify_day(day_checkins, shift, doc_method, doc_missing_action,
 
 def process_employee(employee, from_date, to_date,
                      checkin_list, default_shift_name,
-                     doc_method, doc_missing_action):
+                     doc_missing_action):
     from_date = getdate(from_date)
     to_date   = getdate(to_date)
 
@@ -853,7 +851,6 @@ def process_employee(employee, from_date, to_date,
 
     daily_checkins = group_checkins_by_date(
         checkin_list, shift,
-        default_method=doc_method,
         from_date=from_date, to_date=to_date
     )
 
@@ -891,7 +888,7 @@ def process_employee(employee, from_date, to_date,
         else:
             day_type = "working"
 
-        result = classify_day(day_checkins, day_shift or {}, doc_method, doc_missing_action,
+        result = classify_day(day_checkins, day_shift or {}, doc_missing_action,
                                is_saturday=is_saturday, day_type=day_type, work_date=work_date)
 
         if result.get("is_late"):
@@ -966,7 +963,7 @@ def process_employee(employee, from_date, to_date,
 
 def get_employee_daily_breakdown(employee, from_date, to_date,
                                   checkin_list, default_shift_name,
-                                  doc_method, doc_missing_action):
+                                  doc_missing_action):
     from_date = getdate(from_date)
     to_date   = getdate(to_date)
 
@@ -976,7 +973,6 @@ def get_employee_daily_breakdown(employee, from_date, to_date,
 
     daily_checkins = group_checkins_by_date(
         checkin_list, shift,
-        default_method=doc_method,
         from_date=from_date, to_date=to_date
     )
 
@@ -1000,7 +996,7 @@ def get_employee_daily_breakdown(employee, from_date, to_date,
         else:
             day_type = "working"
 
-        result = classify_day(day_checkins, day_shift, doc_method, doc_missing_action,
+        result = classify_day(day_checkins, day_shift, doc_missing_action,
                                is_saturday=is_saturday, day_type=day_type, work_date=work_date)
 
         breakdown.append({
@@ -1062,11 +1058,9 @@ def get_daily_checkins_data(attendance_summary=None, from_date=None, to_date=Non
             to_date = str(doc.to_date)
         employee_list  = [row.employee for row in doc.details]
         company        = doc.company
-        doc_method     = doc.working_hours_method
         doc_missing    = doc.missing_checkin_action
         default_shift  = doc.shift_type
     else:
-        doc_method    = "First IN - Last OUT"
         doc_missing   = "Mark as Invalid"
         default_shift = None
 
@@ -1210,7 +1204,6 @@ def get_daily_checkins_data(attendance_summary=None, from_date=None, to_date=Non
             to_date=to_date,
             checkin_list=emp_checkins,
             default_shift_name=default_shift,
-            doc_method=doc_method,
             doc_missing_action=doc_missing,
         )
 

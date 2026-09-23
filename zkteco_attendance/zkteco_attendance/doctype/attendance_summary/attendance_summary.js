@@ -349,6 +349,13 @@ frappe.ui.form.on("Attendance Summary", {
         const d = new frappe.ui.Dialog({
             title: __("Fetch Employees"),
             fields: [
+                { 
+                    label: __("Include Employees with only attendance id and biometric device"), 
+                    fieldname: "include_only_id_and_device", 
+                    fieldtype: "Check",
+                    default: 0,
+                    description: __("If checked, employees without a biometric device or attendance device id will not fetched in the summary. Otherwise, they will be fetched and marked as 'Do Not Process'.")
+                },
                 {
                     label: __("Filter By"),
                     fieldname: "filter_by",
@@ -380,6 +387,16 @@ frappe.ui.form.on("Attendance Summary", {
                 }
                 if (values.filter_by === "Project" && values.project) {
                     filters.project = values.project;
+                }
+
+                // include_only_id_and_device: when checked, only employees
+                // mapped to a biometric device (zk_biometric_device AND
+                // attendance_device_id both set) are fetched at all. When
+                // unchecked, everyone is fetched and unmapped employees are
+                // added as "Do Not Process" (see below).
+                if (values.include_only_id_and_device) {
+                    filters["zk_biometric_device"] = ["is", "set"];
+                    filters["attendance_device_id"] = ["is", "set"];
                 }
 
                 frappe.call({

@@ -55,6 +55,11 @@ frappe.ui.form.on("Biometric Device", {
             frappe.set_route("List", "Attendance Sync Log", { device: frm.doc.name });
         }, __("Actions"));
 
+        // ── Browse Employees On Device (map device users to Employees) ───
+        frm.add_custom_button(__("Browse Employees On Device"), function () {
+            frm.trigger("browse_employees_on_device");
+        }, __("Actions"));
+
         // ── Status badge ────────────────────────────────────────────────
         const statusColor = { "Active": "green", "Inactive": "red" };
         frm.page.set_indicator(
@@ -73,6 +78,40 @@ frappe.ui.form.on("Biometric Device", {
         } else {
             frm.dashboard.add_comment(__("No sync has been performed yet."), "orange", true);
         }
+    },
+
+    browse_employees_on_device(frm) {
+        if (!frm.doc.device_ip) {
+            frappe.msgprint(__("Please save the Device IP first."));
+            return;
+        }
+        if (!frm.doc.enable) {
+            frappe.msgprint({
+                title: __("Device Not Enabled"),
+                indicator: "red",
+                message: __("This device is not enabled. Please enable it first."),
+            });
+            return;
+        }
+
+        frappe.call({
+            method: "zkteco_attendance.zkteco_attendance.api.endpoints.get_device_users",
+            args: { device_name: frm.doc.name },
+            freeze: true,
+            freeze_message: __("Fetching employees from device…"),
+            callback(r) {
+                const res = r.message || {};
+                if (!res.success) {
+                    frappe.msgprint({
+                        title: __("Fetch Failed"),
+                        indicator: "red",
+                        message: res.error || __("Could not fetch users from the device."),
+                    });
+                    return;
+                }
+                showEmployeeMappingDialog(frm, res);
+            },
+        });
     },
 
     pull_checkins_with_progress(frm) {
@@ -330,3 +369,175 @@ frappe.ui.form.on("Biometric Device", {
         });
     },
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Employee mapping dialog (file scope — not a form event handler)
+// Shows every user enrolled on the device with an Employee Link control
+// per row; "Map Employees" writes attendance_device_id + zk_biometric_device
+// onto the selected Employees.
+// ─────────────────────────────────────────────────────────────────────────────
+function showEmployeeMappingDialog(frm, res) {
+    const users = res.users || [];
+
+    if (!users.length) {
+        frappe.msgprint({
+            title: __("No Users On Device"),
+            indicator: "orange",
+            message: __("No users are enrolled on this device. Enroll users on the device first, then browse again."),
+        });
+        return;
+    }
+
+    // True Link controls need a real doc; build a fake doctype schema
+    // (fields only — never saved to the server).
+    const mock_doc = { doctype: "Biometric Device", name: frm.doc.name };
+    const mock_doctype = {
+        name: "Biometric Device",
+        fields: [],
+        field_map: {},
+        permissions: 0,
+        issingle: 0,
+        __form: {},
+    };
+
+    const dialog = new frappe.ui.Dialog({
+        title: __("Employees On {0}", [frm.doc.device_name || frm.doc.name]),
+        size: "extra-large",
+        fields: [
+            {
+                fieldtype: "HTML",
+                fieldname: "mapping_html",
+            },
+        ],
+        primary_action_label: __("Map Employees"),
+        primary_action() {
+            const mappings = [];
+            let invalid = false;
+            dialog.$wrapper.find(".zk-emp-row").each(function () {
+                const $row = $(this);
+                const control = $row.data("zk-link-control");
+                const employee = control ? (control.get_value() || "") : "";
+                if (control && employee && !control.validate(employee)) {
+                    invalid = true;
+                    frappe.msgprint({
+                        title: __("Invalid Employee"),
+                        indicator: "red",
+                        message: __("Row with Device ID {0} has an invalid Employee value.", [$row.data("user-id")]),
+                    });
+                    return false;  // break out of .each()
+                }
+                mappings.push({
+                    user_id: $row.data("user-id"),
+                    employee: employee,
+                });
+            });
+            if (invalid) return;
+
+            frappe.call({
+                method: "zkteco_attendance.zkteco_attendance.api.endpoints.map_device_employees",
+                args: {
+                    device_name: frm.doc.name,
+                    mappings: JSON.stringify(mappings),
+                },
+                freeze: true,
+                freeze_message: __("Saving employee mappings…"),
+                callback(r2) {
+                    const out = r2.message || {};
+                    if (out.success) {
+                        dialog.hide();
+                        frappe.show_alert({
+                            message: __("{0} employee(s) mapped, {1} unmapped.", [out.mapped, out.unmapped]),
+                            indicator: "green",
+                        }, 6);
+                    }
+                    // failures are toasted by frappe.call's default error handler
+                },
+            });
+        },
+    });
+
+    const $body = dialog.fields_dict.mapping_html.$wrapper;
+
+    const rows_html = users.map(u => {
+        const badge = u.employee
+            ? `<span class="indicator green" title="${frappe.utils.escape_html(u.employee_name || u.employee)}"></span>`
+            : `<span class="indicator orange" title="${__("Not mapped")}"></span>`;
+        const emp_label = u.employee
+            ? frappe.utils.escape_html(u.employee_name || u.employee)
+            : "";
+        return `
+            <tr class="zk-emp-row" data-user-id="${frappe.utils.escape_html(u.user_id)}">
+                <td class="text-center" style="width:36px;">${badge}</td>
+                <td style="width:110px;"><b>${frappe.utils.escape_html(u.user_id)}</b></td>
+                <td>${frappe.utils.escape_html(u.name || "—")}</td>
+                <td class="text-muted" style="width:160px;">${emp_label}</td>
+                <td style="min-width:240px;">
+                    <div class="zk-emp-link-target"
+                         data-user-id="${frappe.utils.escape_html(u.user_id)}"
+                         data-current="${frappe.utils.escape_html(u.employee || "")}"></div>
+                </td>
+            </tr>`;
+    }).join("");
+
+    $body.html(`
+        <div class="zk-emp-mapping">
+            <div class="text-muted" style="margin-bottom:8px;">
+                ${__("{0} user(s) enrolled on this device. Use the Employee column to map each device ID to an Employee, then click Map Employees.", [users.length])}
+            </div>
+            <div style="max-height:420px; overflow:auto;">
+                <table class="table table-bordered table-sm" style="margin-bottom:0;">
+                    <thead>
+                        <tr>
+                            <th class="text-center" style="width:36px;"></th>
+                            <th style="width:110px;">${__("Device ID")}</th>
+                            <th>${__("Name On Device")}</th>
+                            <th style="width:160px;">${__("Current Employee")}</th>
+                            <th style="min-width:240px;">${__("Employee")}</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows_html}</tbody>
+                </table>
+            </div>
+        </div>
+    `);
+
+    // ── Mount a real Employee Link control on every row ─────────────────
+    // ControlLink gives the same autocomplete/awesomplete UX as a Link
+    // field on any form (validation, create-new, Advanced Search).
+    const build_controls = () => {
+        $body.find(".zk-emp-link-target").each(function () {
+            const $target = $(this);
+            const fieldname = "zk_emp_" + String($target.data("user-id")).replace(/\W/g, "_");
+            const df = {
+                fieldtype: "Link",
+                fieldname: fieldname,
+                options: "Employee",
+                label: "",
+                reqd: 0,
+                ignore_link_validation: 0,
+            };
+
+            const control = new frappe.ui.form.ControlLink({
+                df: df,
+                doc: mock_doc,
+                doctype: mock_doctype,
+            });
+            control.$wrapper.appendTo($target);
+            control.set_value($target.data("current") || "");
+
+            // re-trigger the awesomplete suggestions when the user clicks in
+            control.$input.on("focus", function () {
+                const v = control.get_value() || "";
+                control.$input.val("").trigger("input");
+                control.$input.val(v).trigger("input");
+            });
+
+            $target.closest(".zk-emp-row").data("zk-link-control", control);
+        });
+    };
+
+    // Build the controls only once the dialog is visible (the wrapper
+    // must be in the DOM and laid out before Link autocomplete works).
+    dialog.show();
+    setTimeout(build_controls, 100);
+}

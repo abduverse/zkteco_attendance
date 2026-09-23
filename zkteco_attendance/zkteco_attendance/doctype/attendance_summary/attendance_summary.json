@@ -5,7 +5,7 @@
  "engine": "InnoDB",
  "field_order": [
   "from_date","to_date","month","year","column_break_1","company","project","status",
-  "section_settings","shift_type","col_break_settings","working_hours_method","missing_checkin_action",
+  "section_settings","shift_type","col_break_settings","missing_checkin_action",
   "section_details","details",
   "section_summary","total_employees","total_working_days","column_break_summary","total_overtime_hours","total_day_ot_hours","total_night_ot_hours","total_weekend_ot_hours","total_holiday_ot_hours"
  ],
@@ -21,7 +21,6 @@
   {"fieldname":"section_settings","fieldtype":"Section Break","label":"Processing Settings"},
   {"fieldname":"shift_type","fieldtype":"Link","label":"Default Shift Type","options":"ZK Shift Type","description":"Fallback shift used when employee has no assignment"},
   {"fieldname":"col_break_settings","fieldtype":"Column Break"},
-  {"fieldname":"working_hours_method","fieldtype":"Select","label":"Working Hours Method","options":"First IN - Last OUT\nActual Pairs (IN-OUT)","default":"First IN - Last OUT"},
   {"fieldname":"missing_checkin_action","fieldtype":"Select","label":"Missing Check-In/Out Action","options":"Mark as Invalid\nMark as Present\nRequire Manual Review","default":"Mark as Invalid"},
   {"fieldname":"section_details","fieldtype":"Section Break","label":"Employee Attendance Details"},
   {"fieldname":"details","fieldtype":"Table","label":"Details","options":"Attendance Summary Detail"},

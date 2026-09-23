@@ -98,7 +98,6 @@ def _process_background(summary_name):
 
     checkins_by_employee = fetch_checkins(employee_list, doc.from_date, doc.to_date)
 
-    doc_method         = doc.working_hours_method
     doc_missing_action = doc.missing_checkin_action
     default_shift      = doc.shift_type
 
@@ -128,7 +127,6 @@ def _process_background(summary_name):
             to_date=doc.to_date,
             checkin_list=emp_checkins,
             default_shift_name=default_shift,
-            doc_method=doc_method,
             doc_missing_action=doc_missing_action,
         )
         row.working_days        = result["working_days"]

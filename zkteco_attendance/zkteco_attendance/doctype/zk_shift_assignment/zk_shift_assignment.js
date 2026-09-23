@@ -15,7 +15,7 @@ frappe.ui.form.on("ZK Shift Assignment", {
             fields: [
                 { label: __("Department"),       fieldname: "department",      fieldtype: "Link", options: "Department" },
                 { label: __("Project"),          fieldname: "project",         fieldtype: "Link", options: "Project" },
-                { label: __("Job Title"),        fieldname: "job_title",       fieldtype: "Link", options: "Job Title" },
+                { label: __("Job Title"),        fieldname: "job_title",       fieldtype: "Link", options: "Designation" },
             ],
             primary_action_label: __("Fetch & Add"),
             primary_action(values) {

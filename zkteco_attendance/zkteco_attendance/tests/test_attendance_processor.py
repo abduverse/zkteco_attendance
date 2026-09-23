@@ -86,7 +86,7 @@ class TestOvertimeKeys(unittest.TestCase):
             _mk_checkin("C1", "2026-08-10 06:00:00", "IN"),
             _mk_checkin("C2", "2026-08-10 17:00:00", "OUT"),
         ]
-        result = classify_day(checkins, _day_shift(), "First IN - Last OUT", "Mark as Invalid")
+        result = classify_day(checkins, _day_shift(), "Mark as Invalid")
 
         self.assertEqual(result["status"], "Present")
         self.assertAlmostEqual(result["hours"], 11.0, places=2)
@@ -116,7 +116,6 @@ class TestOvertimeKeys(unittest.TestCase):
             to_date="2026-08-10",
             checkin_list=checkins,
             default_shift_name=None,
-            doc_method="First IN - Last OUT",
             doc_missing_action="Mark as Invalid",
         )
 
@@ -147,7 +146,6 @@ class TestOvertimeKeys(unittest.TestCase):
             to_date="2026-08-10",
             checkin_list=checkins,
             default_shift_name=None,
-            doc_method="First IN - Last OUT",
             doc_missing_action="Mark as Invalid",
         )
 
@@ -172,7 +170,7 @@ class TestGraceAndShiftOvertime(unittest.TestCase):
             _mk_checkin("C1", "2026-08-10 08:30:00", "IN"),
             _mk_checkin("C2", "2026-08-10 17:00:00", "OUT"),
         ]
-        result = classify_day(checkins, shift, "First IN - Last OUT", "Mark as Invalid")
+        result = classify_day(checkins, shift, "Mark as Invalid")
 
         # raw 8.5h, 20 min beyond the 10 min grace -> 8.5 - 20/60
         self.assertTrue(result["is_late"])
@@ -190,7 +188,7 @@ class TestGraceAndShiftOvertime(unittest.TestCase):
             _mk_checkin("C1", "2026-08-10 08:10:00", "IN"),
             _mk_checkin("C2", "2026-08-10 17:00:00", "OUT"),
         ]
-        result = classify_day(checkins, shift, "First IN - Last OUT", "Mark as Invalid")
+        result = classify_day(checkins, shift, "Mark as Invalid")
 
         self.assertFalse(result["is_late"])
         self.assertAlmostEqual(result["hours"], 8.8333, places=2)
@@ -205,7 +203,7 @@ class TestGraceAndShiftOvertime(unittest.TestCase):
             _mk_checkin("C1", "2026-08-10 12:00:00", "IN"),
             _mk_checkin("C2", "2026-08-10 17:00:00", "OUT"),
         ]
-        result = classify_day(checkins, shift, "First IN - Last OUT", "Mark as Invalid")
+        result = classify_day(checkins, shift, "Mark as Invalid")
 
         # raw 5h, 4h late -> 1h effective -> Half Day (0 < 1h <= 4h)
         self.assertTrue(result["is_late"])
@@ -221,7 +219,7 @@ class TestGraceAndShiftOvertime(unittest.TestCase):
             _mk_checkin("C1", "2026-08-10 08:00:00", "IN"),
             _mk_checkin("C2", "2026-08-10 16:30:00", "OUT"),
         ]
-        result = classify_day(checkins, shift, "First IN - Last OUT", "Mark as Invalid")
+        result = classify_day(checkins, shift, "Mark as Invalid")
 
         # raw 8.5h, 30 min early beyond the 15 min grace -> 8.5 - 15/60
         self.assertTrue(result["is_early_exit"])
@@ -326,7 +324,6 @@ class TestGraceAndShiftOvertime(unittest.TestCase):
             to_date="2026-08-10",
             checkin_list=checkins,
             default_shift_name=None,
-            doc_method="First IN - Last OUT",
             doc_missing_action="Mark as Invalid",
         )
 
@@ -409,7 +406,6 @@ class TestNightShiftCrossMidnight(unittest.TestCase):
             to_date="2026-01-01",
             checkin_list=checkins,
             default_shift_name="Night Guard",
-            doc_method="First IN - Last OUT",
             doc_missing_action="Mark as Invalid",
         )
 
@@ -511,8 +507,8 @@ class TestNightShiftCrossMidnight(unittest.TestCase):
             _mk_checkin("C1", "2026-01-01 17:20:00", "IN"),   # 10 min late beyond grace
             _mk_checkin("C2", "2026-01-02 05:45:00", "OUT"),  # 15 min early beyond grace
         ]
-        result = classify_day(checkins, shift, "First IN - Last OUT",
-                               "Mark as Invalid", work_date=date(2026, 1, 1))
+        result = classify_day(checkins, shift, "Mark as Invalid",
+                               work_date=date(2026, 1, 1))
 
         self.assertTrue(result["is_late"])
         self.assertTrue(result["is_early_exit"])
@@ -596,7 +592,6 @@ class TestNightShiftAcceptance(unittest.TestCase):
             to_date="2026-01-01",
             checkin_list=checkins,
             default_shift_name="Night Guard",
-            doc_method="First IN - Last OUT",
             doc_missing_action="Mark as Invalid",
         )
 
@@ -662,8 +657,7 @@ class TestLunchBreakDeduction(unittest.TestCase):
             _mk_checkin("C1", "2026-08-10 08:00:00", "IN"),
             _mk_checkin("C2", "2026-08-10 17:00:00", "OUT"),
         ]
-        result = classify_day(checkins, shift, "First IN - Last OUT",
-                               "Mark as Invalid")
+        result = classify_day(checkins, shift, "Mark as Invalid")
 
         self.assertEqual(result["status"], "Present")
         self.assertAlmostEqual(result["hours"], 8.0, places=2)
@@ -678,8 +672,7 @@ class TestLunchBreakDeduction(unittest.TestCase):
             _mk_checkin("C1", "2026-08-10 08:00:00", "IN"),
             _mk_checkin("C2", "2026-08-10 17:00:00", "OUT"),
         ]
-        result = classify_day(checkins, shift, "First IN - Last OUT",
-                               "Mark as Invalid")
+        result = classify_day(checkins, shift, "Mark as Invalid")
 
         self.assertEqual(result["status"], "Present")
         self.assertAlmostEqual(result["hours"], 9.0, places=2)
@@ -703,8 +696,8 @@ class TestSaturdayHalfDayMode(unittest.TestCase):
             _mk_checkin("C1", "2026-08-15 08:00:00", "IN"),
             _mk_checkin("C2", "2026-08-15 12:00:00", "OUT"),
         ]
-        result = classify_day(checkins, shift, "First IN - Last OUT",
-                               "Mark as Invalid", is_saturday=True,
+        result = classify_day(checkins, shift, "Mark as Invalid",
+                               is_saturday=True,
                                work_date=date(2026, 8, 15))
 
         self.assertEqual(result["status"], "Present")
@@ -724,8 +717,8 @@ class TestSaturdayHalfDayMode(unittest.TestCase):
             _mk_checkin("C1", "2026-08-15 08:00:00", "IN"),
             _mk_checkin("C2", "2026-08-15 14:00:00", "OUT"),
         ]
-        result = classify_day(checkins, shift, "First IN - Last OUT",
-                               "Mark as Invalid", is_saturday=True,
+        result = classify_day(checkins, shift, "Mark as Invalid",
+                               is_saturday=True,
                                work_date=date(2026, 8, 15))
 
         self.assertEqual(result["status"], "Present")
@@ -746,8 +739,8 @@ class TestSaturdayHalfDayMode(unittest.TestCase):
             _mk_checkin("C1", "2026-08-15 08:00:00", "IN"),
             _mk_checkin("C2", "2026-08-15 18:00:00", "OUT"),
         ]
-        result = classify_day(checkins, shift, "First IN - Last OUT",
-                               "Mark as Invalid", is_saturday=True,
+        result = classify_day(checkins, shift, "Mark as Invalid",
+                               is_saturday=True,
                                work_date=date(2026, 8, 15))
 
         self.assertEqual(result["status"], "Present")
@@ -769,8 +762,8 @@ class TestSaturdayHalfDayMode(unittest.TestCase):
             _mk_checkin("C1", "2026-08-15 08:00:00", "IN"),
             _mk_checkin("C2", "2026-08-15 09:00:00", "OUT"),
         ]
-        result = classify_day(checkins, shift, "First IN - Last OUT",
-                               "Mark as Invalid", is_saturday=True,
+        result = classify_day(checkins, shift, "Mark as Invalid",
+                               is_saturday=True,
                                work_date=date(2026, 8, 15))
 
         self.assertEqual(result["status"], "Present")
@@ -785,8 +778,8 @@ class TestSaturdayHalfDayMode(unittest.TestCase):
             saturday_mode="Half Day",
             saturday_half_day_hours=4,
         )
-        result = classify_day([], shift, "First IN - Last OUT",
-                               "Mark as Invalid", is_saturday=True,
+        result = classify_day([], shift, "Mark as Invalid",
+                               is_saturday=True,
                                work_date=date(2026, 8, 15))
 
         self.assertEqual(result["status"], "Absent")
@@ -806,8 +799,8 @@ class TestSaturdayHalfDayMode(unittest.TestCase):
             _mk_checkin("C1", "2026-08-15 08:15:00", "IN"),
             _mk_checkin("C2", "2026-08-15 13:00:00", "OUT"),
         ]
-        result = classify_day(checkins, shift, "First IN - Last OUT",
-                               "Mark as Invalid", is_saturday=True,
+        result = classify_day(checkins, shift, "Mark as Invalid",
+                               is_saturday=True,
                                work_date=date(2026, 8, 15))
 
         self.assertEqual(result["status"], "Present")
@@ -840,7 +833,6 @@ class TestSaturdayHalfDayMode(unittest.TestCase):
             to_date="2026-08-15",
             checkin_list=checkins,
             default_shift_name=None,
-            doc_method="First IN - Last OUT",
             doc_missing_action="Mark as Invalid",
         )
 
@@ -866,7 +858,7 @@ class TestStatusClassification(unittest.TestCase):
             _mk_checkin("C1", "2026-08-10 08:00:00", "IN"),
             _mk_checkin("C2", "2026-08-10 13:00:00", "OUT"),
         ]
-        result = classify_day(checkins, shift, "First IN - Last OUT", "Mark as Invalid")
+        result = classify_day(checkins, shift, "Mark as Invalid")
 
         self.assertEqual(result["status"], "Present")
         self.assertAlmostEqual(result["absent_hours"], 0.0, places=2)
@@ -880,7 +872,7 @@ class TestStatusClassification(unittest.TestCase):
             _mk_checkin("C1", "2026-08-10 08:00:00", "IN"),
             _mk_checkin("C2", "2026-08-10 12:00:00", "OUT"),
         ]
-        result = classify_day(checkins, shift, "First IN - Last OUT", "Mark as Invalid")
+        result = classify_day(checkins, shift, "Mark as Invalid")
 
         self.assertEqual(result["status"], "Half Day")
         self.assertAlmostEqual(result["hours"], 4.0, places=2)
@@ -895,7 +887,7 @@ class TestStatusClassification(unittest.TestCase):
             _mk_checkin("C1", "2026-08-10 08:00:00", "IN"),
             _mk_checkin("C2", "2026-08-10 10:00:00", "OUT"),
         ]
-        result = classify_day(checkins, shift, "First IN - Last OUT", "Mark as Invalid")
+        result = classify_day(checkins, shift, "Mark as Invalid")
 
         self.assertEqual(result["status"], "Half Day")
         self.assertAlmostEqual(result["hours"], 2.0, places=2)
@@ -905,7 +897,7 @@ class TestStatusClassification(unittest.TestCase):
         from zkteco_attendance.zkteco_attendance.attendance_processor import classify_day
 
         shift = _day_shift()
-        result = classify_day([], shift, "First IN - Last OUT", "Mark as Invalid")
+        result = classify_day([], shift, "Mark as Invalid")
 
         self.assertEqual(result["status"], "Absent")
         self.assertAlmostEqual(result["hours"], 0.0, places=2)
@@ -920,7 +912,7 @@ class TestStatusClassification(unittest.TestCase):
             _mk_checkin("C1", "2026-08-10 08:00:00", "IN"),
         ]
         for action in ("Mark as Invalid", "Mark as Present", "Require Manual Review"):
-            result = classify_day(checkins, shift, "First IN - Last OUT", action)
+            result = classify_day(checkins, shift, action)
             self.assertEqual(result["status"], "Invalid", msg=action)
             self.assertAlmostEqual(result["hours"], 0.0, places=2)
 
@@ -933,7 +925,7 @@ class TestStatusClassification(unittest.TestCase):
             _mk_checkin("C1", "2026-08-10 08:00:00", "IN"),
             _mk_checkin("C2", "2026-08-10 08:00:00", "OUT"),
         ]
-        result = classify_day(checkins, shift, "First IN - Last OUT", "Mark as Invalid")
+        result = classify_day(checkins, shift, "Mark as Invalid")
 
         self.assertEqual(result["status"], "Absent")
         self.assertAlmostEqual(result["hours"], 0.0, places=2)
@@ -959,7 +951,6 @@ class TestHolidayAsPresent(unittest.TestCase):
             to_date="2026-08-15",
             checkin_list=[],
             default_shift_name=None,
-            doc_method="First IN - Last OUT",
             doc_missing_action="Mark as Invalid",
         )
 
@@ -987,7 +978,6 @@ class TestHolidayAsPresent(unittest.TestCase):
             to_date="2026-08-15",
             checkin_list=checkins,
             default_shift_name=None,
-            doc_method="First IN - Last OUT",
             doc_missing_action="Mark as Invalid",
         )
 
@@ -1089,7 +1079,6 @@ class TestDailyCheckinsBiometricDeviceFilter(unittest.TestCase):
             to_date=date(2026, 8, 31),
             company="Acme",
             details=details,
-            working_hours_method="First IN - Last OUT",
             missing_checkin_action="Mark as Invalid",
             shift_type=None,
         )
@@ -1235,7 +1224,6 @@ class TestDailyCheckinsProjectFilter(unittest.TestCase):
             to_date=date(2026, 8, 31),
             company="Acme",
             details=details,
-            working_hours_method="First IN - Last OUT",
             missing_checkin_action="Mark as Invalid",
             shift_type=None,
         )
