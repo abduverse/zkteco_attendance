@@ -18,21 +18,59 @@ def test_connection(device_name):
 
 
 @frappe.whitelist()
-def pull_checkins_now(device_name, run_id=None):
+def start_pull_checkins(device_name, run_id=None):
     """
-    Run a Pull Checkins sync IN THE FOREGROUND (synchronous) so the Biometric
-    Device form can show live progress and then display the final results
-    immediately, without needing to check Attendance Sync Log separately.
+    Start a Pull Checkins sync as a BACKGROUND job and return immediately.
 
-    Progress is reported two ways while this runs:
-    - realtime events on "zkteco_pull_progress" (fast path when the browser's
-      websocket is connected), and
-    - a per-run cached snapshot readable via get_pull_progress (polling
-      fallback when realtime is unavailable).
+    The old `pull_checkins_now` ran the whole sync inside the web request, so
+    gunicorn's worker timeout (and any reverse-proxy read timeout) killed
+    long pulls with a "timed out" error. Queuing the sync instead means the
+    HTTP request only takes milliseconds; progress is fetched from
+    get_pull_progress (which also returns the final result once the job has
+    finished).
 
     run_id is a client-generated token for this pull; it is echoed in every
-    progress payload so the client can ignore stale progress from other runs.
-    The final return value also contains the full result summary.
+    progress payload and in the final result so the client can ignore stale
+    data from other runs.
+    """
+    frappe.only_for(["System Manager", "HR Manager", "Biometric Device Manager"])
+
+    device = frappe.get_doc("Biometric Device", device_name)
+    if not device.enable:
+        frappe.throw(_("Device {0} is not enabled. Please enable it first.").format(device_name))
+
+    run_id = run_id or frappe.generate_hash(length=10)
+
+    frappe.enqueue(
+        "zkteco_attendance.zkteco_attendance.sync_engine.run_sync_job",
+        device_name=device_name,
+        triggered_by="Manual",
+        user=frappe.session.user,
+        run_id=run_id,
+        queue="long",
+        timeout=3600,
+        job_name="zkteco_pull_{}".format(device_name),
+        enqueue_after_commit=True,
+    )
+
+    # Seed the progress cache so the client's first poll finds this run.
+    from zkteco_attendance.zkteco_attendance.sync_engine import _emit_progress
+    _emit_progress(device_name, frappe.session.user, "queued", message=_("Sync job queued..."),
+                   run_id=run_id)
+
+    return {"success": True, "run_id": run_id, "status": "queued"}
+
+
+@frappe.whitelist()
+def pull_checkins_now(device_name, run_id=None):
+    """
+    DEPRECATED foreground pull — kept for backward compatibility.
+
+    Runs the whole sync synchronously inside the web request, which gunicorn
+    or a reverse proxy kills with a timeout when the pull takes too long.
+    The Biometric Device form and the zk-daily-checkins page now use
+    `start_pull_checkins` instead. The live-progress machinery (realtime
+    events + cached polling snapshot) still works the same way.
     """
     frappe.only_for(["System Manager", "HR Manager", "Biometric Device Manager"])
 
@@ -50,19 +88,30 @@ def pull_checkins_now(device_name, run_id=None):
 @frappe.whitelist()
 def get_pull_progress(device_name, run_id=None):
     """
-    Return the latest cached progress payload for a foreground Pull Checkins
-    run of this device by the current user (or None).
+    Return the latest cached progress payload for a Pull Checkins run of this
+    device by the current user (or None).
 
-    Used by the Biometric Device form as a polling fallback so live progress
-    still displays when realtime/websocket events don't reach the browser.
-    Pass the same run_id the pull was started with so stale progress from an
-    older run is ignored.
+    Used as a polling fallback so live progress still displays when
+    realtime/websocket events don't reach the browser. Pass the same run_id
+    the pull was started with so stale progress from an older run is ignored.
+
+    When the run has finished, the payload additionally carries the full
+    result summary under `result` (read from the cached job result), so the
+    client learns the outcome from this same poll even though the sync itself
+    runs in a background worker.
     """
     frappe.only_for(["System Manager", "HR Manager", "Biometric Device Manager"])
 
-    from zkteco_attendance.zkteco_attendance.sync_engine import get_live_progress
+    from zkteco_attendance.zkteco_attendance.sync_engine import get_live_progress, get_cached_run_result
 
-    return get_live_progress(device_name, user=frappe.session.user, run_id=run_id)
+    payload = get_live_progress(device_name, user=frappe.session.user, run_id=run_id)
+
+    if payload and run_id and payload.get("stage") in ("done", "failed"):
+        result = get_cached_run_result(device_name, run_id)
+        if result:
+            payload["result"] = result
+
+    return payload
 
 
 @frappe.whitelist()
@@ -93,7 +142,7 @@ def get_device_users(device_name):
                 "zk_biometric_device": device.name,
                 "status": "Active",
             },
-            fields=["name", "employee_name", "attendance_device_id"],
+            fields=["name", "employee_name", "attendance_device_id", "first_name", "fullname"],
         )
         for row in rows:
             mapped_by_id[str(row.attendance_device_id)] = row
@@ -217,7 +266,7 @@ def sync_device(device_name):
         device_name=device_name,
         triggered_by="Manual",
         queue="long",
-        timeout=300,
+        timeout=600,
         job_name="zkteco_sync_{}".format(device_name),
     )
 

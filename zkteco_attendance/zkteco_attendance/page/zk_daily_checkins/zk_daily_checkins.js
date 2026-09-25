@@ -311,12 +311,61 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
             if (text) $stage.text(text);
         };
 
+        // ── Render the final result (from the cached job result) ──────────
+        const finishPull = (res) => {
+            cleanup();
+
+            if (!res || !res.success) {
+                setProgress(100, __("Pull failed."));
+                $stage.removeClass("text-muted").addClass("text-danger");
+                $errors.show().text((res && res.error) || __("Unknown error"));
+                dialog.get_close_btn().show();
+                return;
+            }
+
+            setProgress(100, __("Pull completed."));
+            $counts.show();
+            $dlgBody.find(".zkteco-cnt-total").text(res.total_records ?? 0);
+            $dlgBody.find(".zkteco-cnt-new").text(res.new_records ?? 0);
+            $dlgBody.find(".zkteco-cnt-dupes").text(res.duplicates ?? 0);
+            $dlgBody.find(".zkteco-cnt-failed").text(res.failed ?? 0);
+            $dlgBody.find(".zkteco-cnt-ot").text(res.overtime_records ?? 0);
+            $dlgBody.find(".zkteco-cnt-dp").text(res.double_punches ?? 0);
+
+            const statusColors = { Success: "text-success", Partial: "text-warning", Failed: "text-danger" };
+            $dlgBody.find(".zkteco-cnt-status")
+                .removeClass("text-success text-warning text-danger")
+                .addClass(statusColors[res.sync_status] || "")
+                .text(res.sync_status || "—");
+
+            if (res.errors && res.errors.length) {
+                $errors.show().html(
+                    "<b>" + __("Issues") + ":</b><br>" +
+                    res.errors.map(e => frappe.utils.escape_html(e)).join("<br>")
+                );
+            }
+
+            frappe.show_alert({
+                message: __("Pulled {0} record(s): {1} new, {2} duplicate(s), {3} failed.",
+                    [res.total_records, res.new_records, res.duplicates, res.failed]),
+                indicator: res.sync_status === "Success" ? "green" : (res.sync_status === "Partial" ? "orange" : "red"),
+            }, 8);
+
+            dialog.get_close_btn().show();
+
+            // New checkins may have arrived — refresh the loaded report.
+            if (state.data) trigger_load();
+        };
+
         const handler = (data) => {
             if (!data) return;
             // Ignore progress belonging to a different pull run.
             if (data.run_id && data.run_id !== run_id) return;
 
             switch (data.stage) {
+                case "queued":
+                    setProgress(5, data.message || __("Sync job queued…"));
+                    break;
                 case "connecting":
                     setProgress(5, data.message);
                     break;
@@ -389,7 +438,14 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                 method: "zkteco_attendance.zkteco_attendance.api.endpoints.get_pull_progress",
                 args: { device_name: deviceName, run_id: run_id },
                 callback(r) {
-                    if (r && r.message) handler(r.message);
+                    if (!r || !r.message) return;
+                    handler(r.message);
+                    // Background job finished — the payload carries the
+                    // cached final result; finish the dialog from it.
+                    if (r.message.result && (r.message.stage === "done" || r.message.stage === "failed")) {
+                        stopPolling();
+                        finishPull(r.message.result);
+                    }
                 },
             });
         };
@@ -405,64 +461,30 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
             }
         };
 
+        // ── Queue the pull as a background job ─────────────────────────────
+        // Same as the Biometric Device form: the sync runs in a background
+        // worker, so gunicorn / proxy timeouts can no longer kill long
+        // pulls. Progress and the final result arrive through the polling
+        // loop above (and realtime events when available); finishPull
+        // renders the outcome.
         frappe.call({
-            method: "zkteco_attendance.zkteco_attendance.api.endpoints.pull_checkins_now",
+            method: "zkteco_attendance.zkteco_attendance.api.endpoints.start_pull_checkins",
             args: { device_name: deviceName, run_id: run_id },
             callback(r) {
-                cleanup();
-
-                if (!r.message) {
-                    setProgress(100, __("No response from server."));
-                    dialog.get_close_btn().show();
-                    return;
-                }
-
-                const res = r.message;
-
-                if (!res.success) {
-                    setProgress(100, __("Pull failed."));
+                if (!r.message || !r.message.success) {
+                    cleanup();
+                    setProgress(100, __("Could not start the pull."));
                     $stage.removeClass("text-muted").addClass("text-danger");
-                    $errors.show().text(res.error || __("Unknown error"));
                     dialog.get_close_btn().show();
                     return;
                 }
-
-                setProgress(100, __("Pull completed."));
-                $counts.show();
-                $dlgBody.find(".zkteco-cnt-total").text(res.total_records ?? 0);
-                $dlgBody.find(".zkteco-cnt-new").text(res.new_records ?? 0);
-                $dlgBody.find(".zkteco-cnt-dupes").text(res.duplicates ?? 0);
-                $dlgBody.find(".zkteco-cnt-failed").text(res.failed ?? 0);
-                $dlgBody.find(".zkteco-cnt-ot").text(res.overtime_records ?? 0);
-                $dlgBody.find(".zkteco-cnt-dp").text(res.double_punches ?? 0);
-
-                const statusColors = { Success: "text-success", Partial: "text-warning", Failed: "text-danger" };
-                $dlgBody.find(".zkteco-cnt-status")
-                    .removeClass("text-success text-warning text-danger")
-                    .addClass(statusColors[res.sync_status] || "")
-                    .text(res.sync_status || "—");
-
-                if (res.errors && res.errors.length) {
-                    $errors.show().html(
-                        "<b>" + __("Issues") + ":</b><br>" +
-                        res.errors.map(e => frappe.utils.escape_html(e)).join("<br>")
-                    );
-                }
-
-                frappe.show_alert({
-                    message: __("Pulled {0} record(s): {1} new, {2} duplicate(s), {3} failed.",
-                        [res.total_records, res.new_records, res.duplicates, res.failed]),
-                    indicator: res.sync_status === "Success" ? "green" : (res.sync_status === "Partial" ? "orange" : "red"),
-                }, 8);
-
+                // Queued — the user may dismiss the dialog; the job keeps
+                // running and results also land in the Attendance Sync Log.
                 dialog.get_close_btn().show();
-
-                // New checkins may have arrived — refresh the loaded report.
-                if (state.data) trigger_load();
             },
             error() {
                 cleanup();
-                setProgress(100, __("Pull failed."));
+                setProgress(100, __("Could not start the pull."));
                 $stage.removeClass("text-muted").addClass("text-danger");
                 dialog.get_close_btn().show();
             },

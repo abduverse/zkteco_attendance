@@ -25,6 +25,8 @@
   "sync_frequency",
   "fetch_mode",
   "clear_device_logs_after_sync",
+  "column_break_2",
+  "sync_data_after",
   "clock_offset_minutes",
   "employee_mapping_method",
   "enable_overtime_punches",
@@ -151,6 +153,16 @@
    "label": "Clear Device Logs After Sync"
   },
   {
+   "fieldname": "column_break_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "sync_data_after",
+   "fieldtype": "Date",
+   "label": "Sync Data After",
+   "description": "Optional cutoff date for pulls: only attendance punches ON or AFTER this date are synced to Employee Checkins. Leave empty to sync everything stored on the device. Useful for skipping old logs that are no longer needed."
+  },
+  {
    "default": "0",
    "fieldname": "clock_offset_minutes",
    "fieldtype": "Int",
@@ -183,7 +195,7 @@
   }
  ],
  "links": [],
- "modified": "2024-01-01 00:00:00.000000",
+ "modified": "2026-09-24 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Zkteco Attendance",
  "name": "Biometric Device",

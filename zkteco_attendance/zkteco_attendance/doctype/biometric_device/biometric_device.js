@@ -198,6 +198,51 @@ frappe.ui.form.on("Biometric Device", {
             if (text) $stage.text(text);
         };
 
+        // ── Render the final result (from the cached job result) ──────────
+        const finishPull = (res) => {
+            cleanup();
+
+            if (!res || !res.success) {
+                setProgress(100, __("Pull failed."));
+                $stage.removeClass("text-muted").addClass("text-danger");
+                $errors.show().text((res && res.error) || __("Unknown error"));
+                dialog.get_close_btn().show();
+                frm.reload_doc();
+                return;
+            }
+
+            setProgress(100, __("Pull completed."));
+            $counts.show();
+            $body.find(".zkteco-cnt-total").text(res.total_records ?? 0);
+            $body.find(".zkteco-cnt-new").text(res.new_records ?? 0);
+            $body.find(".zkteco-cnt-dupes").text(res.duplicates ?? 0);
+            $body.find(".zkteco-cnt-failed").text(res.failed ?? 0);
+            $body.find(".zkteco-cnt-ot").text(res.overtime_records ?? 0);
+            $body.find(".zkteco-cnt-dp").text(res.double_punches ?? 0);
+
+            const statusColors = { Success: "text-success", Partial: "text-warning", Failed: "text-danger" };
+            $body.find(".zkteco-cnt-status")
+                .removeClass("text-success text-warning text-danger")
+                .addClass(statusColors[res.sync_status] || "")
+                .text(res.sync_status || "—");
+
+            if (res.errors && res.errors.length) {
+                $errors.show().html(
+                    "<b>" + __("Issues") + ":</b><br>" +
+                    res.errors.map(e => frappe.utils.escape_html(e)).join("<br>")
+                );
+            }
+
+            frappe.show_alert({
+                message: __("Pulled {0} record(s): {1} new, {2} duplicate(s), {3} failed.",
+                    [res.total_records, res.new_records, res.duplicates, res.failed]),
+                indicator: res.sync_status === "Success" ? "green" : (res.sync_status === "Partial" ? "orange" : "red"),
+            }, 8);
+
+            dialog.get_close_btn().show();
+            frm.reload_doc();
+        };
+
         // ── Subscribe to realtime progress events ─────────────────────────
         const handler = (data) => {
             if (!data || data.device !== frm.doc.name) return;
@@ -205,6 +250,9 @@ frappe.ui.form.on("Biometric Device", {
             if (data.run_id && data.run_id !== run_id) return;
 
             switch (data.stage) {
+                case "queued":
+                    setProgress(5, data.message || __("Sync job queued…"));
+                    break;
                 case "connecting":
                     setProgress(5, data.message);
                     break;
@@ -275,7 +323,7 @@ frappe.ui.form.on("Biometric Device", {
         };
         const poll = () => {
             // If the dialog was dismissed while the pull is still running,
-            // stop polling (the request callback will still clean up).
+            // stop polling (the background job keeps running server-side).
             if (!dialog.$wrapper.is(":visible")) {
                 stopPolling();
                 return;
@@ -284,7 +332,14 @@ frappe.ui.form.on("Biometric Device", {
                 method: "zkteco_attendance.zkteco_attendance.api.endpoints.get_pull_progress",
                 args: { device_name: frm.doc.name, run_id: run_id },
                 callback(r) {
-                    if (r && r.message) handler(r.message);
+                    if (!r || !r.message) return;
+                    handler(r.message);
+                    // Background job finished — the payload carries the
+                    // cached final result; finish the dialog from it.
+                    if (r.message.result && (r.message.stage === "done" || r.message.stage === "failed")) {
+                        stopPolling();
+                        finishPull(r.message.result);
+                    }
                 },
             });
         };
@@ -300,69 +355,30 @@ frappe.ui.form.on("Biometric Device", {
             }
         };
 
-        // ── Run the synchronous pull ───────────────────────────────────────
-        // Note: for devices with very large numbers of stored logs, ensure
-        // your web server / gunicorn worker timeout (and any reverse proxy
-        // timeout) is generous enough (e.g. 5-10 minutes), since this runs
-        // as a single foreground request while progress is streamed via
-        // realtime events.
-        frm.call({
-            method: "zkteco_attendance.zkteco_attendance.api.endpoints.pull_checkins_now",
+        // ── Queue the pull as a background job ─────────────────────────────
+        // The sync runs in a background worker instead of inside this web
+        // request, so gunicorn / reverse-proxy timeouts can no longer kill
+        // long pulls ("timed out"). Progress and the final result arrive
+        // through the polling loop above (and realtime events when
+        // available); finishPull renders the outcome.
+        frappe.call({
+            method: "zkteco_attendance.zkteco_attendance.api.endpoints.start_pull_checkins",
             args: { device_name: frm.doc.name, run_id: run_id },
             callback(r) {
-                cleanup();
-
-                if (!r.message) {
-                    setProgress(100, __("No response from server."));
-                    dialog.get_close_btn().show();
-                    return;
-                }
-
-                const res = r.message;
-
-                if (!res.success) {
-                    setProgress(100, __("Pull failed."));
+                if (!r.message || !r.message.success) {
+                    cleanup();
+                    setProgress(100, __("Could not start the pull."));
                     $stage.removeClass("text-muted").addClass("text-danger");
-                    $errors.show().text(res.error || __("Unknown error"));
                     dialog.get_close_btn().show();
-                    frm.reload_doc();
                     return;
                 }
-
-                setProgress(100, __("Pull completed."));
-                $counts.show();
-                $body.find(".zkteco-cnt-total").text(res.total_records ?? 0);
-                $body.find(".zkteco-cnt-new").text(res.new_records ?? 0);
-                $body.find(".zkteco-cnt-dupes").text(res.duplicates ?? 0);
-                $body.find(".zkteco-cnt-failed").text(res.failed ?? 0);
-                $body.find(".zkteco-cnt-ot").text(res.overtime_records ?? 0);
-                $body.find(".zkteco-cnt-dp").text(res.double_punches ?? 0);
-
-                const statusColors = { Success: "text-success", Partial: "text-warning", Failed: "text-danger" };
-                $body.find(".zkteco-cnt-status")
-                    .removeClass("text-success text-warning text-danger")
-                    .addClass(statusColors[res.sync_status] || "")
-                    .text(res.sync_status || "—");
-
-                if (res.errors && res.errors.length) {
-                    $errors.show().html(
-                        "<b>" + __("Issues") + ":</b><br>" +
-                        res.errors.map(e => frappe.utils.escape_html(e)).join("<br>")
-                    );
-                }
-
-                frappe.show_alert({
-                    message: __("Pulled {0} record(s): {1} new, {2} duplicate(s), {3} failed.",
-                        [res.total_records, res.new_records, res.duplicates, res.failed]),
-                    indicator: res.sync_status === "Success" ? "green" : (res.sync_status === "Partial" ? "orange" : "red"),
-                }, 8);
-
+                // Queued — the user may dismiss the dialog; the job keeps
+                // running and results also land in the Attendance Sync Log.
                 dialog.get_close_btn().show();
-                frm.reload_doc();
             },
             error() {
                 cleanup();
-                setProgress(100, __("Pull failed."));
+                setProgress(100, __("Could not start the pull."));
                 $stage.removeClass("text-muted").addClass("text-danger");
                 dialog.get_close_btn().show();
             },
@@ -388,18 +404,6 @@ function showEmployeeMappingDialog(frm, res) {
         return;
     }
 
-    // True Link controls need a real doc; build a fake doctype schema
-    // (fields only — never saved to the server).
-    const mock_doc = { doctype: "Biometric Device", name: frm.doc.name };
-    const mock_doctype = {
-        name: "Biometric Device",
-        fields: [],
-        field_map: {},
-        permissions: 0,
-        issingle: 0,
-        __form: {},
-    };
-
     const dialog = new frappe.ui.Dialog({
         title: __("Employees On {0}", [frm.doc.device_name || frm.doc.name]),
         size: "extra-large",
@@ -412,26 +416,15 @@ function showEmployeeMappingDialog(frm, res) {
         primary_action_label: __("Map Employees"),
         primary_action() {
             const mappings = [];
-            let invalid = false;
             dialog.$wrapper.find(".zk-emp-row").each(function () {
                 const $row = $(this);
                 const control = $row.data("zk-link-control");
                 const employee = control ? (control.get_value() || "") : "";
-                if (control && employee && !control.validate(employee)) {
-                    invalid = true;
-                    frappe.msgprint({
-                        title: __("Invalid Employee"),
-                        indicator: "red",
-                        message: __("Row with Device ID {0} has an invalid Employee value.", [$row.data("user-id")]),
-                    });
-                    return false;  // break out of .each()
-                }
                 mappings.push({
                     user_id: $row.data("user-id"),
                     employee: employee,
                 });
             });
-            if (invalid) return;
 
             frappe.call({
                 method: "zkteco_attendance.zkteco_attendance.api.endpoints.map_device_employees",
@@ -465,12 +458,16 @@ function showEmployeeMappingDialog(frm, res) {
         const emp_label = u.employee
             ? frappe.utils.escape_html(u.employee_name || u.employee)
             : "";
+        const emp_label_name = u.employee
+            ? frappe.utils.escape_html(u.fullname || u.first_name)
+            : "";
         return `
             <tr class="zk-emp-row" data-user-id="${frappe.utils.escape_html(u.user_id)}">
                 <td class="text-center" style="width:36px;">${badge}</td>
                 <td style="width:110px;"><b>${frappe.utils.escape_html(u.user_id)}</b></td>
                 <td>${frappe.utils.escape_html(u.name || "—")}</td>
                 <td class="text-muted" style="width:160px;">${emp_label}</td>
+                <td class="text-muted" style="width:160px;">${emp_label_name}</td>
                 <td style="min-width:240px;">
                     <div class="zk-emp-link-target"
                          data-user-id="${frappe.utils.escape_html(u.user_id)}"
@@ -491,7 +488,8 @@ function showEmployeeMappingDialog(frm, res) {
                             <th class="text-center" style="width:36px;"></th>
                             <th style="width:110px;">${__("Device ID")}</th>
                             <th>${__("Name On Device")}</th>
-                            <th style="width:160px;">${__("Current Employee")}</th>
+                            <th style="width:130px;">${__("Current Employee")}</th>
+                            <th style="width:160px;">${__("Current Emp Name")}</th>
                             <th style="min-width:240px;">${__("Employee")}</th>
                         </tr>
                     </thead>
@@ -502,27 +500,28 @@ function showEmployeeMappingDialog(frm, res) {
     `);
 
     // ── Mount a real Employee Link control on every row ─────────────────
-    // ControlLink gives the same autocomplete/awesomplete UX as a Link
-    // field on any form (validation, create-new, Advanced Search).
+    // frappe.ui.form.make_control is the supported way to create standalone
+    // controls (same as the filter bar on the zk-daily-checkins page). It
+    // wires up parent/render_input/refresh so the Link gets its full
+    // autocomplete/awesomplete UX — hand-constructing ControlLink leaves the
+    // input blank and dead because BaseControl skips its own setup without
+    // a parent passed through the factory.
     const build_controls = () => {
         $body.find(".zk-emp-link-target").each(function () {
             const $target = $(this);
             const fieldname = "zk_emp_" + String($target.data("user-id")).replace(/\W/g, "_");
-            const df = {
-                fieldtype: "Link",
-                fieldname: fieldname,
-                options: "Employee",
-                label: "",
-                reqd: 0,
-                ignore_link_validation: 0,
-            };
 
-            const control = new frappe.ui.form.ControlLink({
-                df: df,
-                doc: mock_doc,
-                doctype: mock_doctype,
+            const control = frappe.ui.form.make_control({
+                df: {
+                    fieldtype: "Link",
+                    fieldname: fieldname,
+                    options: "Employee",
+                    label: "",
+                },
+                parent: $target,
+                render_input: true,
             });
-            control.$wrapper.appendTo($target);
+            control.refresh();
             control.set_value($target.data("current") || "");
 
             // re-trigger the awesomplete suggestions when the user clicks in

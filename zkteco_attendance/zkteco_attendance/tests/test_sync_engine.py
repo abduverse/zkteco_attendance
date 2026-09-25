@@ -68,11 +68,11 @@ class TestSyncEngine(unittest.TestCase):
 
     @patch("zkteco_attendance.zkteco_attendance.sync_engine._save_sync_log")
     @patch("zkteco_attendance.zkteco_attendance.sync_engine.create_employee_checkin")
-    @patch("zkteco_attendance.zkteco_attendance.sync_engine.checkin_exists")
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_existing_checkins")
     @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_shift_for_employee")
     @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_employee_by_biometric_id")
     @patch("zkteco_attendance.zkteco_attendance.sync_engine.pull_attendance_from_device")
-    def test_new_records_only_pulls_new_punch_when_uid_already_synced(self, mock_pull, mock_emp, mock_shift, mock_exists, mock_create, mock_log):
+    def test_new_records_only_pulls_new_punch_when_uid_already_synced(self, mock_pull, mock_emp, mock_shift, mock_existing, mock_create, mock_log):
         """
         Regression test: on real ZKTeco devices (and in pyzk) an attendance
         log's `uid` is the user's device-internal id, REUSED by every punch
@@ -113,9 +113,7 @@ class TestSyncEngine(unittest.TestCase):
         mock_shift.return_value = {}
 
         # t1 already exists in the DB (duplicate); t2 is a brand-new punch.
-        def fake_exists(employee, timestamp, device_name):
-            return timestamp == t1
-        mock_exists.side_effect = fake_exists
+        mock_existing.return_value = {("HR-EMP-00001", t1)}
         mock_create.return_value = "CHECKIN-1"
 
         result = sync_device("Test-ZK-NewOnly", triggered_by="Test", user="Administrator")
@@ -130,6 +128,104 @@ class TestSyncEngine(unittest.TestCase):
         args, kwargs = mock_create.call_args
         self.assertEqual(args[:3], ("HR-EMP-00001", "Test", t2))
         self.assertEqual(kwargs.get("uid"), 7)
+
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine._save_sync_log")
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.create_employee_checkin")
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_existing_checkins")
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_shift_for_employee")
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_employee_by_biometric_id")
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.pull_attendance_from_device")
+    def test_sync_data_after_drops_punches_before_cutoff(self, mock_pull, mock_emp, mock_shift, mock_existing, mock_create, mock_log):
+        """
+        When the device has sync_data_after set, punches strictly before
+        that date are dropped right after the pull and never become
+        Employee Checkins. Punches ON the cutoff date are kept (inclusive).
+        """
+        from zkteco_attendance.zkteco_attendance.sync_engine import sync_device
+
+        if not frappe.db.exists("Biometric Device", "Test-ZK-Cutoff"):
+            device = frappe.get_doc({
+                "doctype": "Biometric Device",
+                "device_name": "Test-ZK-Cutoff",
+                "device_ip": "192.168.1.102",
+                "port": 4370,
+                "company": frappe.defaults.get_global_default("company"),
+                "status": "Active",
+                "time_zone": "UTC",
+                "fetch_mode": "All Records",
+                "auto_sync_enabled": 1,
+                "sync_frequency": "5 Min",
+                "sync_data_after": getdate("2026-01-10"),
+            })
+            device.insert(ignore_permissions=True)
+            frappe.db.commit()
+
+        # Two punches BEFORE the cutoff date, one ON it, one after it.
+        mock_pull.return_value = [
+            {"uid": 7, "user_id": "100", "timestamp": get_datetime("2026-01-09 08:00:00"), "punch": 0, "status": 0},
+            {"uid": 7, "user_id": "100", "timestamp": get_datetime("2026-01-09 17:00:00"), "punch": 0, "status": 0},
+            {"uid": 7, "user_id": "100", "timestamp": get_datetime("2026-01-10 08:00:00"), "punch": 0, "status": 0},
+            {"uid": 7, "user_id": "100", "timestamp": get_datetime("2026-01-11 17:00:00"), "punch": 0, "status": 0},
+        ]
+        mock_emp.return_value = {"name": "HR-EMP-00001", "employee_name": "Test", "company": "Acme"}
+        mock_shift.return_value = {}
+        mock_existing.return_value = set()
+        mock_create.return_value = "CHECKIN-1"
+
+        result = sync_device("Test-ZK-Cutoff", triggered_by="Test", user="Administrator")
+
+        self.assertTrue(result["success"])
+        # Only the punch ON the cutoff date and the one after it are created.
+        self.assertEqual(result["new_records"], 2)
+        self.assertEqual(result["total_records"], 2)
+        self.assertEqual(result["failed"], 0)
+
+        created_times = sorted(call[0][2] for call in mock_create.call_args_list)
+        self.assertEqual(created_times, [
+            get_datetime("2026-01-10 08:00:00"),
+            get_datetime("2026-01-11 17:00:00"),
+        ])
+
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine._save_sync_log")
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.create_employee_checkin")
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_existing_checkins")
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_shift_for_employee")
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_employee_by_biometric_id")
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.pull_attendance_from_device")
+    def test_sync_data_after_empty_keeps_all_punches(self, mock_pull, mock_emp, mock_shift, mock_existing, mock_create, mock_log):
+        """With no sync_data_after set, every pulled punch is processed as before."""
+        from zkteco_attendance.zkteco_attendance.sync_engine import sync_device
+
+        if not frappe.db.exists("Biometric Device", "Test-ZK-NoCutoff"):
+            device = frappe.get_doc({
+                "doctype": "Biometric Device",
+                "device_name": "Test-ZK-NoCutoff",
+                "device_ip": "192.168.1.103",
+                "port": 4370,
+                "company": frappe.defaults.get_global_default("company"),
+                "status": "Active",
+                "time_zone": "UTC",
+                "fetch_mode": "All Records",
+                "auto_sync_enabled": 1,
+                "sync_frequency": "5 Min",
+            })
+            device.insert(ignore_permissions=True)
+            frappe.db.commit()
+
+        mock_pull.return_value = [
+            {"uid": 7, "user_id": "100", "timestamp": get_datetime("2025-06-01 08:00:00"), "punch": 0, "status": 0},
+            {"uid": 7, "user_id": "100", "timestamp": get_datetime("2025-06-02 08:00:00"), "punch": 0, "status": 0},
+        ]
+        mock_emp.return_value = {"name": "HR-EMP-00001", "employee_name": "Test", "company": "Acme"}
+        mock_shift.return_value = {}
+        mock_existing.return_value = set()
+        mock_create.return_value = "CHECKIN-1"
+
+        result = sync_device("Test-ZK-NoCutoff", triggered_by="Test", user="Administrator")
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["total_records"], 2)
+        self.assertEqual(result["new_records"], 2)
 
     def test_get_punch_type_mapping(self):
         """Punch codes should map correctly to IN/OUT."""

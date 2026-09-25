@@ -6,7 +6,7 @@ Employee Checkin records, and logging results to Attendance Sync Log.
 
 import frappe
 from frappe import _
-from frappe.utils import now_datetime, get_datetime, cint
+from frappe.utils import now_datetime, get_datetime, getdate, cint
 from datetime import timedelta
 
 from .zk_client import pull_attendance_from_device, get_punch_type, is_overtime_punch
@@ -143,6 +143,31 @@ def checkin_exists(employee, timestamp, device_name):
     return bool(result)
 
 
+def get_existing_checkins(employee_names, device_name, after=None):
+    """
+    Bulk duplicate lookup: return the set of (employee, timestamp) pairs of
+    existing Employee Checkins (for this device) whose timestamp falls in a
+    ±60s window around ANY pulled punch of that employee.
+
+    Replaces the old per-record `checkin_exists` SQL in the create loop —
+    one bulk query for the whole pull instead of one per punch, which was
+    the main reason large pulls took minutes. `after` bounds the scan to
+    checkins at/after the earliest pulled punch, so old history is never
+    loaded needlessly.
+    """
+    if not employee_names:
+        return set()
+    placeholders = ",".join(["%s"] * len(employee_names))
+    query = """SELECT employee, `time` FROM `tabEmployee Checkin`
+               WHERE device_id=%s AND employee IN ({ph})""".format(ph=placeholders)
+    params = [device_name] + list(employee_names)
+    if after:
+        query += " AND `time` >= %s"
+        params.append(after)
+    rows = frappe.db.sql(query, tuple(params))
+    return {(r[0], get_datetime(r[1])) for r in rows}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Double-punch detection (same employee, within 1 minute of previous punch)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -229,6 +254,53 @@ def create_employee_checkin(employee, employee_name, timestamp, log_type, device
 # ─────────────────────────────────────────────────────────────────────────────
 # Main sync
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _result_cache_key(device_name, run_id):
+    return "zkteco_pull_result:{}:{}".format(device_name, run_id)
+
+
+def run_sync_job(device_name, triggered_by="Manual", user=None, run_id=None):
+    """
+    Background-job wrapper around sync_device.
+
+    Runs the full sync off the web request (so gunicorn / proxy timeouts can
+    never kill a long pull) and stores the final result summary in the Redis
+    cache under zkteco_pull_result:<device>:<run_id> with a TTL. The client
+    polls get_pull_progress for live progress, then reads this cached result
+    once the job has finished (stage "done" / "failed" with matching run_id).
+    """
+    try:
+        result = sync_device(device_name, triggered_by=triggered_by, user=user, run_id=run_id)
+        result = dict(result)
+        result["device"] = device_name
+        result["run_id"] = run_id
+        try:
+            _get_cache().set_value(_result_cache_key(device_name, run_id), result,
+                                   expires_in_sec=1800)
+        except Exception:
+            pass
+        return result
+    except Exception as e:
+        err = str(e)
+        frappe.log_error(message="Sync job failed for device {}: {}".format(device_name, err),
+                         title="ZKTeco Sync Job Error")
+        _emit_progress(device_name, user, "failed", message=err, run_id=run_id)
+        payload = {"success": False, "error": err, "device": device_name, "run_id": run_id}
+        try:
+            _get_cache().set_value(_result_cache_key(device_name, run_id), payload,
+                                   expires_in_sec=1800)
+        except Exception:
+            pass
+        return payload
+
+
+def get_cached_run_result(device_name, run_id):
+    """Return the cached final result of a background pull run, or None."""
+    try:
+        return _get_cache().get_value(_result_cache_key(device_name, run_id))
+    except Exception:
+        return None
+
 
 def group_records_by_attendance_date(records, device):
     """
@@ -323,6 +395,26 @@ def sync_device(device_name, triggered_by="Manual", user=None, run_id=None):
         frappe.db.commit()
         return {"success": False, "error": str(e)}
 
+    # ── Step 1.5: "Sync Data After" date cutoff ────────────────────────────
+    # When the device has a sync_data_after date set, punches strictly
+    # BEFORE that date are dropped right after the pull so they never
+    # reach double-punch filtering, IN/OUT resolution or checkin creation.
+    # Comparison is on the calendar date of each punch (device timestamps
+    # are local wall-clock time), so a punch on the cutoff date itself is
+    # KEPT (inclusive).
+    sync_after = getdate(device.sync_data_after) if device.sync_data_after else None
+    if sync_after and records:
+        before_cutoff = len(records)
+        records = [r for r in records if get_datetime(r["timestamp"]).date() >= sync_after]
+        skipped_old = before_cutoff - len(records)
+        total_records = len(records)
+        _emit_progress(device_name, user, "filtered",
+                       total_records, before_cutoff,
+                       _("Skipped {0} punch(es) before Sync Data After date {1}.")
+                       .format(skipped_old, str(sync_after)),
+                       extra={"skipped_before_cutoff": skipped_old},
+                       run_id=run_id)
+
     # Note: we deliberately do NOT pre-filter "already pulled" records by
     # their device `uid`.  On ZKTeco devices (and in pyzk), an attendance
     # log's `uid` is the user's device-internal id and is REUSED by every
@@ -360,6 +452,20 @@ def sync_device(device_name, triggered_by="Manual", user=None, run_id=None):
             resolved_log_type[id(rec)] = lt
 
     # ── Step 4: Create Employee Checkins ──────────────────────────────────
+    # Bulk duplicate lookup up front: ONE query for the whole pull instead of
+    # one SQL round-trip per punch (the old approach, which dominated sync
+    # runtime on large devices). Records created earlier within this same run
+    # are added to the set as we go, and any race with a concurrent sync is
+    # still caught by the DuplicateEntryError handling in the loop below.
+    existing_pairs = set()
+    if records:
+        earliest = min(get_datetime(r["timestamp"]) for r in records)
+        existing_pairs = get_existing_checkins(
+            {emp["name"] for emp in emp_cache.values() if emp},
+            device_name,
+            after=earliest - timedelta(seconds=61),
+        )
+
     total_to_process = len(records)
     for idx, rec in enumerate(records, start=1):
         try:
@@ -375,9 +481,16 @@ def sync_device(device_name, triggered_by="Manual", user=None, run_id=None):
                 errors.append("No employee for biometric ID: {}".format(user_id))
                 continue
 
-            if checkin_exists(emp["name"], timestamp, device_name):
+            rec_ts = get_datetime(timestamp)
+            duplicate = any(
+                prior_emp == emp["name"] and abs((prior_ts - rec_ts).total_seconds()) <= 60
+                for prior_emp, prior_ts in existing_pairs
+            )
+            if duplicate:
                 duplicates += 1
                 continue
+
+            existing_pairs.add((emp["name"], rec_ts))
 
             create_employee_checkin(emp["name"], emp["employee_name"], timestamp,
                                     log_type, device_name, uid=rec.get("uid"), is_overtime=is_ot)
