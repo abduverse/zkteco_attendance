@@ -151,6 +151,8 @@ def get_device_users(device_name):
         emp = mapped_by_id.get(u["user_id"])
         u["employee"] = emp.name if emp else ""
         u["employee_name"] = emp.employee_name if emp else ""
+        u["first_name"] = emp.first_name if emp else ""
+        u["fullname"] = emp.fullname if emp else ""
 
     return {"success": True, "users": users, "count": len(users)}
 
