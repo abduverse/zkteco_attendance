@@ -141,7 +141,7 @@
         {
             "fieldname": "overtime_hours",
             "fieldtype": "Float",
-            "label": "Overtime Hours",
+            "label": "Total Overtime Hours",
             "read_only": 1,
             "in_list_view": 1,
             "columns": 1

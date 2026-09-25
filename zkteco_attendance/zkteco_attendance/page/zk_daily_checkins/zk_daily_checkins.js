@@ -892,7 +892,7 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                 deviceInfo.push(`<span class="text-muted" title="${__("Biometric Device")}" style="margin-left:8px;font-size:0.78rem;"><b>Device:</b> ${frappe.utils.escape_html(emp.zk_biometric_device)}</span>`);
             }
             if (emp.attendance_device_id) {
-                deviceInfo.push(`<span class="text-muted" title="${__("Device ID")}" style="margin-left:8px;font-size:0.78rem;"><b>Device Emp ID:</b> ${frappe.utils.escape_html(emp.attendance_device_id)}</span>`);
+                deviceInfo.push(`<span class="text-muted" title="${__("Device ID")}" style="margin-left:8px;font-size:0.78rem;"><b>Device ID:</b> ${frappe.utils.escape_html(emp.attendance_device_id)}</span>`);
             }
             if (emp.shift_type) {
                 deviceInfo.push(`<span class="text-muted" title="${__("Shift Type")}" style="margin-left:8px;font-size:0.78rem;"><b>Shift:</b> ${frappe.utils.escape_html(emp.shift_type)}</span>`);
@@ -904,7 +904,6 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                         <div>
                             <span class="text-muted" style="margin-left:8px; border:1px solid #e4e3e3; border-radius:var(--border-radius); padding:2px 4px;"><b>Emp Name:</b> ${frappe.utils.escape_html(emp.fullname || emp.employee_name || emp.employee)}</span>
                             <span class="text-muted" style="margin-left:8px; border:1px solid #e4e3e3; border-radius:var(--border-radius); padding:2px 4px;"><b>Emp ID:</b> ${frappe.utils.escape_html(emp.employee)}</span>
-                            ${emp.department ? `<span class="text-muted" style="margin-left:8px; border:1px solid #e4e3e3; border-radius:var(--border-radius); padding:2px 4px;"><b>Department:</b> ${frappe.utils.escape_html(emp.department)}</span>` : ""}
                             <span class="text-muted" style="margin-left:8px; border:1px solid #e4e3e3; border-radius:var(--border-radius); padding:2px 4px;">${deviceInfo.join("")}</span>
                         </div>
                         <div class="text-muted">${statsLabel}${otLabel}<i class="fa fa-chevron-${isOpen?"up":"down"}"></i></div>

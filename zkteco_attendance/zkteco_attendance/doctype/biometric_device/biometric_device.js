@@ -388,9 +388,10 @@ frappe.ui.form.on("Biometric Device", {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Employee mapping dialog (file scope — not a form event handler)
-// Shows every user enrolled on the device with an Employee Link control
-// per row; "Map Employees" writes attendance_device_id + zk_biometric_device
-// onto the selected Employees.
+// Shows every user enrolled on the device with a checkbox and an Employee
+// Link control per row; "Map Selected Rows" writes attendance_device_id +
+// zk_biometric_device onto the Employees of the ticked rows only. A search
+// box on top filters the fetched device users by ID or name.
 // ─────────────────────────────────────────────────────────────────────────────
 function showEmployeeMappingDialog(frm, res) {
     const users = res.users || [];
@@ -413,11 +414,15 @@ function showEmployeeMappingDialog(frm, res) {
                 fieldname: "mapping_html",
             },
         ],
-        primary_action_label: __("Map Employees"),
+        primary_action_label: __("Map Selected Rows"),
         primary_action() {
+            // Only rows with the checkbox ticked are submitted; every other
+            // device user is left untouched on the server (the mapping
+            // endpoint only touches the user_ids it receives).
             const mappings = [];
             dialog.$wrapper.find(".zk-emp-row").each(function () {
                 const $row = $(this);
+                if (!$row.find(".zk-emp-select").is(":checked")) return;
                 const control = $row.data("zk-link-control");
                 const employee = control ? (control.get_value() || "") : "";
                 mappings.push({
@@ -425,6 +430,15 @@ function showEmployeeMappingDialog(frm, res) {
                     employee: employee,
                 });
             });
+
+            if (!mappings.length) {
+                frappe.msgprint({
+                    title: __("No Rows Selected"),
+                    indicator: "orange",
+                    message: __("Tick the checkbox of at least one row to map."),
+                });
+                return;
+            }
 
             frappe.call({
                 method: "zkteco_attendance.zkteco_attendance.api.endpoints.map_device_employees",
@@ -463,6 +477,9 @@ function showEmployeeMappingDialog(frm, res) {
             : "";
         return `
             <tr class="zk-emp-row" data-user-id="${frappe.utils.escape_html(u.user_id)}">
+                <td class="text-center" style="width:36px;">
+                    <input type="checkbox" class="zk-emp-select" data-user-id="${frappe.utils.escape_html(u.user_id)}" />
+                </td>
                 <td class="text-center" style="width:36px;">${badge}</td>
                 <td style="width:110px;"><b>${frappe.utils.escape_html(u.user_id)}</b></td>
                 <td>${frappe.utils.escape_html(u.name || "—")}</td>
@@ -479,13 +496,22 @@ function showEmployeeMappingDialog(frm, res) {
     $body.html(`
         <div class="zk-emp-mapping">
             <div class="text-muted" style="margin-bottom:8px;">
-                ${__("{0} user(s) enrolled on this device. Use the Employee column to map each device ID to an Employee, then click Map Employees.", [users.length])}
+                ${__("{0} user(s) enrolled on this device. Tick the rows to map, optionally use the search box to filter them, then click Map Selected Rows.", [users.length])}
+            </div>
+            <div class="zk-emp-search-row" style="margin-bottom:8px;">
+                <input type="text"
+                       class="form-control input-xs zk-emp-search"
+                       placeholder="${__("Search device ID or name…")}"
+                       autocomplete="off" />
             </div>
             <div style="max-height:420px; overflow:auto;">
                 <table class="table table-bordered table-sm" style="margin-bottom:0;">
                     <thead>
                         <tr>
-                            <th class="text-center" style="width:36px;"></th>
+                            <th class="text-center" style="width:36px;">
+                                <input type="checkbox" class="zk-emp-select-all"
+                                       title="${__("Select visible rows")}" />
+                            </th>
                             <th style="width:110px;">${__("Device ID")}</th>
                             <th>${__("Name On Device")}</th>
                             <th style="width:130px;">${__("Current Employee")}</th>
@@ -498,6 +524,43 @@ function showEmployeeMappingDialog(frm, res) {
             </div>
         </div>
     `);
+
+    // ── Search / filter the fetched device users ────────────────────────
+    const $search = $body.find(".zk-emp-search");
+    $search.on("input", function () {
+        applyEmployeeFilter();
+    });
+
+    function applyEmployeeFilter() {
+        const term = ($search.val() || "").trim().toLowerCase();
+        $body.find(".zk-emp-row").each(function () {
+            const $row = $(this);
+            const text = ($row.text() || "").toLowerCase();
+            $row.toggle(!term || text.indexOf(term) !== -1);
+        });
+        syncSelectAllCheckbox();
+    }
+
+    // ── Row / select-all checkboxes (map only the selected rows) ────────
+    function syncSelectAllCheckbox() {
+        const $visible = $body.find(".zk-emp-row").filter(":visible");
+        const $checked = $visible.find(".zk-emp-select:checked");
+        $body.find(".zk-emp-select-all").prop(
+            "checked",
+            $visible.length > 0 && $checked.length === $visible.length
+        );
+    }
+
+    $body.on("change", ".zk-emp-select", syncSelectAllCheckbox);
+
+    $body.on("change", ".zk-emp-select-all", function () {
+        const checked = $(this).is(":checked");
+        // Applies to visible rows only, so it respects the active search.
+        $body.find(".zk-emp-row").filter(":visible").each(function () {
+            $(this).find(".zk-emp-select").prop("checked", checked);
+        });
+        syncSelectAllCheckbox();
+    });
 
     // ── Mount a real Employee Link control on every row ─────────────────
     // frappe.ui.form.make_control is the supported way to create standalone
