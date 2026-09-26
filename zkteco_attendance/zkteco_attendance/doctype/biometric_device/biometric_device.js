@@ -388,10 +388,12 @@ frappe.ui.form.on("Biometric Device", {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Employee mapping dialog (file scope — not a form event handler)
-// Shows every user enrolled on the device with a checkbox and an Employee
-// Link control per row; "Map Selected Rows" writes attendance_device_id +
-// zk_biometric_device onto the Employees of the ticked rows only. A search
-// box on top filters the fetched device users by ID or name.
+// Shows every user enrolled on the device with a checkbox, an Employee
+// Link control and a ZK Shift Type Link control per row; "Map Selected
+// Rows" writes attendance_device_id + zk_biometric_device onto the
+// Employees of the ticked rows only, and moves each employee into the
+// ZK Shift Assignment of the chosen shift type (empty shift = unassign).
+// A search box on top filters the fetched device users by ID or name.
 // ─────────────────────────────────────────────────────────────────────────────
 function showEmployeeMappingDialog(frm, res) {
     const users = res.users || [];
@@ -425,10 +427,17 @@ function showEmployeeMappingDialog(frm, res) {
                 if (!$row.find(".zk-emp-select").is(":checked")) return;
                 const control = $row.data("zk-link-control");
                 const employee = control ? (control.get_value() || "") : "";
-                mappings.push({
+                const shiftControl = $row.data("zk-shift-control");
+                const shiftType = shiftControl ? (shiftControl.get_value() || "") : "";
+                const mapping = {
                     user_id: $row.data("user-id"),
                     employee: employee,
-                });
+                };
+                // The key is always sent so the server applies the row's
+                // (possibly empty) shift; rows without an Employee are
+                // skipped for shifts server-side.
+                if (employee) mapping.shift_type = shiftType;
+                mappings.push(mapping);
             });
 
             if (!mappings.length) {
@@ -453,7 +462,8 @@ function showEmployeeMappingDialog(frm, res) {
                     if (out.success) {
                         dialog.hide();
                         frappe.show_alert({
-                            message: __("{0} employee(s) mapped, {1} unmapped.", [out.mapped, out.unmapped]),
+                            message: __("{0} employee(s) mapped, {1} unmapped, {2} shift assignment(s) updated.",
+                                [out.mapped, out.unmapped, out.shifts_assigned || 0]),
                             indicator: "green",
                         }, 6);
                     }
@@ -490,13 +500,18 @@ function showEmployeeMappingDialog(frm, res) {
                          data-user-id="${frappe.utils.escape_html(u.user_id)}"
                          data-current="${frappe.utils.escape_html(u.employee || "")}"></div>
                 </td>
+                <td style="min-width:180px;">
+                    <div class="zk-shift-link-target"
+                         data-user-id="${frappe.utils.escape_html(u.user_id)}"
+                         data-current="${frappe.utils.escape_html(u.shift_type || "")}"></div>
+                </td>
             </tr>`;
     }).join("");
 
     $body.html(`
         <div class="zk-emp-mapping">
             <div class="text-muted" style="margin-bottom:8px;">
-                ${__("{0} user(s) enrolled on this device. Tick the rows to map, optionally use the search box to filter them, then click Map Selected Rows.", [users.length])}
+                ${__("{0} user(s) enrolled on this device. Tick the rows to map, optionally use the search box to filter them, then click Map Selected Rows. Setting Shift Type moves the employee into the matching shift assignment; clearing it removes them from their current one.", [users.length])}
             </div>
             <div class="zk-emp-search-row" style="margin-bottom:8px;">
                 <input type="text"
@@ -517,6 +532,7 @@ function showEmployeeMappingDialog(frm, res) {
                             <th style="width:130px;">${__("Current Employee")}</th>
                             <th style="width:160px;">${__("Current Emp Name")}</th>
                             <th style="min-width:240px;">${__("Employee")}</th>
+                            <th style="min-width:180px;">${__("Shift Type")}</th>
                         </tr>
                     </thead>
                     <tbody>${rows_html}</tbody>
@@ -562,39 +578,65 @@ function showEmployeeMappingDialog(frm, res) {
         syncSelectAllCheckbox();
     });
 
-    // ── Mount a real Employee Link control on every row ─────────────────
+    // ── Mount a real Link control on every row (Employee + Shift Type) ──
     // frappe.ui.form.make_control is the supported way to create standalone
     // controls (same as the filter bar on the zk-daily-checkins page). It
     // wires up parent/render_input/refresh so the Link gets its full
     // autocomplete/awesomplete UX — hand-constructing ControlLink leaves the
     // input blank and dead because BaseControl skips its own setup without
     // a parent passed through the factory.
-    const build_controls = () => {
-        $body.find(".zk-emp-link-target").each(function () {
-            const $target = $(this);
-            const fieldname = "zk_emp_" + String($target.data("user-id")).replace(/\W/g, "_");
+    const make_link_control = ($target, options, data_key, row_key, extra_df) => {
+        const fieldname = row_key + "_" + String($target.data("user-id")).replace(/\W/g, "_");
 
-            const control = frappe.ui.form.make_control({
-                df: {
+        const control = frappe.ui.form.make_control({
+            df: Object.assign(
+                {
                     fieldtype: "Link",
                     fieldname: fieldname,
-                    options: "Employee",
+                    options: options,
                     label: "",
                 },
-                parent: $target,
-                render_input: true,
-            });
-            control.refresh();
-            control.set_value($target.data("current") || "");
+                extra_df || {}
+            ),
+            parent: $target,
+            render_input: true,
+        });
+        control.refresh();
+        control.set_value($target.data("current") || "");
 
-            // re-trigger the awesomplete suggestions when the user clicks in
-            control.$input.on("focus", function () {
-                const v = control.get_value() || "";
-                control.$input.val("").trigger("input");
-                control.$input.val(v).trigger("input");
-            });
+        // re-trigger the awesomplete suggestions when the user clicks in
+        control.$input.on("focus", function () {
+            const v = control.get_value() || "";
+            control.$input.val("").trigger("input");
+            control.$input.val(v).trigger("input");
+        });
 
-            $target.closest(".zk-emp-row").data("zk-link-control", control);
+        $target.closest(".zk-emp-row").data(data_key, control);
+        return control;
+    };
+
+    const build_controls = () => {
+        $body.find(".zk-emp-link-target").each(function () {
+            make_link_control($(this), "Employee", "zk-link-control", "zk_emp");
+        });
+
+        // Shift Type links only offer active shift types of the device's
+        // company, so the dialog cannot put employees on another company's
+        // shift (the server applies the same rule).
+        $body.find(".zk-shift-link-target").each(function () {
+            make_link_control(
+                $(this), "ZK Shift Type", "zk-shift-control", "zk_shift",
+                {
+                    get_query() {
+                        return {
+                            filters: {
+                                company: frm.doc.company || "",
+                                is_active: 1,
+                            },
+                        };
+                    },
+                }
+            );
         });
     };
 

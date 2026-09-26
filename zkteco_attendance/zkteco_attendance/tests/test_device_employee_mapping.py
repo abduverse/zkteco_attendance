@@ -2,12 +2,13 @@
 Unit tests for the Biometric Device "Browse Employees On Device" feature:
 - get_device_users endpoint (fetch + annotate device users)
 - map_device_employees endpoint (persist attendance_device_id mapping)
+- shift_type handling in both endpoints (ZK Shift Assignment updates)
 Run with: bench run-tests --app zkteco_attendance
 """
 
 import json
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, call
 
 import frappe
 
@@ -25,9 +26,10 @@ class TestGetDeviceUsersEndpoint(unittest.TestCase):
         mock_conn.get_users.return_value = [user]
         mock_conn_fn.return_value = (mock_conn, MagicMock())
 
+        # frappe.get_all returns frappe._dict rows (attribute access).
         mock_get_all.return_value = [
-            {"name": "HR-EMP-00001", "employee_name": "Abebe Kebede",
-             "attendance_device_id": "100"}
+            frappe._dict({"name": "HR-EMP-00001", "employee_name": "Abebe Kebede",
+                          "attendance_device_id": "100"})
         ]
 
         with patch("frappe.get_doc", return_value=MagicMock()):
@@ -57,6 +59,33 @@ class TestGetDeviceUsersEndpoint(unittest.TestCase):
 
         self.assertEqual(result["users"][0]["employee"], "")
         self.assertEqual(result["users"][0]["employee_name"], "")
+        self.assertEqual(result["users"][0]["shift_type"], "")
+
+    @patch("zkteco_attendance.zkteco_attendance.zk_client.get_zk_connection")
+    @patch("zkteco_attendance.zkteco_attendance.api.endpoints._get_active_shift_types")
+    @patch("frappe.get_all")
+    def test_mapped_user_annotated_with_current_shift_type(
+            self, mock_get_all, mock_shifts, mock_conn_fn):
+        from zkteco_attendance.zkteco_attendance.api.endpoints import get_device_users
+
+        mock_conn = MagicMock()
+        mock_conn.get_users.return_value = [
+            MagicMock(uid=1, user_id="100", name="Abebe Kebede", privilege=0)
+        ]
+        mock_conn_fn.return_value = (mock_conn, MagicMock())
+
+        mock_get_all.return_value = [
+            frappe._dict({"name": "HR-EMP-00001", "employee_name": "Abebe Kebede",
+                          "attendance_device_id": "100"})
+        ]
+        mock_shifts.return_value = {
+            "HR-EMP-00001": {"assignment": "ZK-SA-0001", "shift_type": "Morning"},
+        }
+
+        with patch("frappe.get_doc", return_value=MagicMock()):
+            result = get_device_users("Test-ZK-Device")
+
+        self.assertEqual(result["users"][0]["shift_type"], "Morning")
 
 
 class TestMapDeviceEmployeesEndpoint(unittest.TestCase):
@@ -174,7 +203,7 @@ class TestMapDeviceEmployeesEndpoint(unittest.TestCase):
                 patch("frappe.db.exists", return_value=True), \
                 patch("frappe.db.get_value", return_value="Acme"), \
                 patch("frappe.get_all",
-                      return_value=[{"name": "HR-EMP-00009"}]), \
+                      return_value=[frappe._dict({"name": "HR-EMP-00009"})]), \
                 patch("frappe.db.commit"):
             result = map_device_employees("Test-ZK-Device", mappings=mappings)
 
@@ -183,7 +212,9 @@ class TestMapDeviceEmployeesEndpoint(unittest.TestCase):
         calls = mock_set_value.call_args_list
         self.assertEqual(len(calls), 2)
         self.assertEqual(calls[0].args[1], "HR-EMP-00009")
-        self.assertIsNone(calls[0].args[2])
+        # set_value(doctype, name, key, value) — the stale clear writes None
+        self.assertEqual(calls[0].args[2], "attendance_device_id")
+        self.assertIsNone(calls[0].args[3])
         self.assertEqual(calls[1].args[1], "HR-EMP-00001")
         self.assertEqual(calls[1].args[2]["attendance_device_id"], "100")
 
@@ -201,6 +232,87 @@ class TestMapDeviceEmployeesEndpoint(unittest.TestCase):
 
         self.assertTrue(result["success"])
         self.assertEqual(result["mapped"], 1)
+
+
+class TestMapDeviceEmployeesShifts(unittest.TestCase):
+    """shift_type in mappings drives ZK Shift Assignment changes."""
+
+    def _device(self, name="Test-ZK-Device", company="Acme"):
+        device = MagicMock()
+        device.name = name
+        device.company = company
+        return device
+
+    @patch("zkteco_attendance.zkteco_attendance.api.endpoints._apply_shift_assignment")
+    def test_shift_type_passed_to_apply(self, mock_apply):
+        from zkteco_attendance.zkteco_attendance.api.endpoints import map_device_employees
+
+        mappings = [{"user_id": "100", "employee": "HR-EMP-00001",
+                     "shift_type": "Morning"}]
+
+        with patch("frappe.get_doc", return_value=self._device()), \
+                patch("frappe.db.exists", return_value=True), \
+                patch("frappe.db.get_value", return_value="Acme"), \
+                patch("frappe.get_all", return_value=[]), \
+                patch("frappe.db.set_value"), \
+                patch("frappe.db.commit"):
+            result = map_device_employees("Test-ZK-Device", mappings=mappings)
+
+        mock_apply.assert_called_once_with("HR-EMP-00001", "Morning", "Acme")
+        self.assertEqual(result["shifts_assigned"], 1)
+
+    @patch("zkteco_attendance.zkteco_attendance.api.endpoints._apply_shift_assignment",
+           return_value=False)
+    def test_unchanged_shift_not_counted(self, mock_apply):
+        from zkteco_attendance.zkteco_attendance.api.endpoints import map_device_employees
+
+        mappings = [{"user_id": "100", "employee": "HR-EMP-00001",
+                     "shift_type": "Morning"}]
+        with patch("frappe.get_doc", return_value=self._device()), \
+                patch("frappe.db.exists", return_value=True), \
+                patch("frappe.db.get_value", return_value="Acme"), \
+                patch("frappe.get_all", return_value=[]), \
+                patch("frappe.db.set_value"), \
+                patch("frappe.db.commit"):
+            result = map_device_employees("Test-ZK-Device", mappings=mappings)
+
+        self.assertEqual(result["shifts_assigned"], 0)
+
+    def test_unknown_shift_type_rejected(self):
+        from zkteco_attendance.zkteco_attendance.api.endpoints import map_device_employees
+
+        mappings = [{"user_id": "100", "employee": "HR-EMP-00001",
+                     "shift_type": "Ghost Shift"}]
+        with patch("frappe.get_doc", return_value=self._device()), \
+                patch("frappe.db.exists") as mock_exists, \
+                patch("frappe.db.get_value", return_value="Acme"), \
+                patch("frappe.get_all", return_value=[]), \
+                patch("frappe.db.set_value"), \
+                patch("frappe.db.commit"), \
+                self.assertRaises(frappe.ValidationError):
+            # Employee exists, but the ZK Shift Type does not.
+            mock_exists.side_effect = lambda doctype, name=None: doctype == "Employee"
+            map_device_employees("Test-ZK-Device", mappings=mappings)
+
+        # The validation failed on the unknown ZK Shift Type.
+        self.assertIn(call("ZK Shift Type", "Ghost Shift"), mock_exists.call_args_list)
+
+    @patch("zkteco_attendance.zkteco_attendance.api.endpoints._apply_shift_assignment")
+    def test_empty_shift_still_passed_for_unassign(self, mock_apply):
+        """An explicit empty shift_type key unassigns the employee."""
+        from zkteco_attendance.zkteco_attendance.api.endpoints import map_device_employees
+
+        mappings = [{"user_id": "100", "employee": "HR-EMP-00001", "shift_type": ""}]
+        with patch("frappe.get_doc", return_value=self._device()), \
+                patch("frappe.db.exists", return_value=True), \
+                patch("frappe.db.get_value", return_value="Acme"), \
+                patch("frappe.get_all", return_value=[]), \
+                patch("frappe.db.set_value"), \
+                patch("frappe.db.commit"):
+            result = map_device_employees("Test-ZK-Device", mappings=mappings)
+
+        mock_apply.assert_called_once_with("HR-EMP-00001", "", "Acme")
+        self.assertEqual(result["shifts_assigned"], 1)
 
 
 if __name__ == "__main__":

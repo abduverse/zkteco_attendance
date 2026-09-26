@@ -114,6 +114,103 @@ def get_pull_progress(device_name, run_id=None):
     return payload
 
 
+def _get_active_shift_types(employees):
+    """
+    Return {employee: {"assignment": <ZK Shift Assignment>, "shift_type":
+    <ZK Shift Type>}} for the given employees' active ZK Shift Assignment,
+    if any. An employee has at most one active assignment (enforced by
+    ZK Shift Assignment.validate).
+    """
+    if not employees:
+        return {}
+
+    child_rows = frappe.get_all(
+        "ZK Shift Assignment Employee",
+        filters={"employee": ["in", employees]},
+        fields=["employee", "parent"],
+    )
+
+    parent_names = list({r.parent for r in child_rows})
+    active_shifts = {}
+    if parent_names:
+        for p in frappe.get_all(
+            "ZK Shift Assignment",
+            filters={"name": ["in", parent_names], "status": "Active"},
+            fields=["name", "shift_type"],
+        ):
+            active_shifts[p.name] = p.shift_type
+
+    assigned = {}
+    for r in child_rows:
+        if r.parent in active_shifts:
+            assigned[r.employee] = {
+                "assignment": r.parent,
+                "shift_type": active_shifts[r.parent],
+            }
+    return assigned
+
+
+def _apply_shift_assignment(employee, shift_type, device_company):
+    """
+    Move `employee` into the active ZK Shift Assignment for `shift_type`
+    (creating that assignment for `device_company` if it does not exist
+    yet), or remove them from their current assignment when shift_type is
+    empty. Returns True when a change was made, False when the employee is
+    already in the requested state. An assignment left without employees is
+    deleted, mirroring how assignments are managed from the UI.
+    """
+    current = _get_active_shift_types([employee]).get(employee)
+    cur_shift = current["shift_type"] if current else ""
+    if cur_shift == (shift_type or ""):
+        return False
+
+    if current:
+        old_doc = frappe.get_doc("ZK Shift Assignment", current["assignment"])
+        for row in list(old_doc.employees or []):
+            if row.employee == employee:
+                old_doc.remove(row)
+        if old_doc.employees:
+            old_doc.save(ignore_permissions=True)
+        else:
+            frappe.delete_doc(
+                "ZK Shift Assignment", current["assignment"],
+                ignore_permissions=True,
+            )
+
+    if shift_type:
+        target = frappe.get_all(
+            "ZK Shift Assignment",
+            filters={
+                "shift_type": shift_type,
+                "company": device_company,
+                "status": "Active",
+            },
+            fields=["name"],
+            limit_page_length=1,
+        )
+        if target:
+            sa_doc = frappe.get_doc("ZK Shift Assignment", target[0].name)
+        else:
+            sa_doc = frappe.new_doc("ZK Shift Assignment")
+            sa_doc.shift_type = shift_type
+            sa_doc.company = device_company
+            sa_doc.status = "Active"
+
+        emp = frappe.db.get_value(
+            "Employee", employee,
+            ["employee_name", "department", "designation"], as_dict=True,
+        ) or {}
+        sa_doc.append("employees", {
+            "employee": employee,
+            "employee_name": emp.get("employee_name"),
+            "department": emp.get("department"),
+            "designation": emp.get("designation"),
+        })
+        sa_doc.save(ignore_permissions=True)
+
+    return True
+
+
 @frappe.whitelist()
 def get_device_users(device_name):
     """
@@ -121,6 +218,8 @@ def get_device_users(device_name):
     ERPNext Employee currently mapped to each user_id (via
     attendance_device_id), so the Biometric Device form's
     "Browse Employees On Device" dialog can show and edit the mapping.
+    Each user also carries the shift_type of the employee's active ZK Shift
+    Assignment (empty when unmapped or unassigned).
     """
     frappe.only_for(["System Manager", "HR Manager", "Biometric Device Manager"])
 
@@ -147,12 +246,21 @@ def get_device_users(device_name):
         for row in rows:
             mapped_by_id[str(row.attendance_device_id)] = row
 
+    # Current ZK Shift Assignment per mapped employee, so the mapping
+    # dialog can pre-fill the Shift Type column.
+    assigned_shifts = {}
+    if users:
+        emp_names = [row.name for row in mapped_by_id.values()]
+        if emp_names:
+            assigned_shifts = _get_active_shift_types(emp_names)
+
     for u in users:
         emp = mapped_by_id.get(u["user_id"])
         u["employee"] = emp.name if emp else ""
         u["employee_name"] = emp.employee_name if emp else ""
         u["first_name"] = emp.first_name if emp else ""
         u["fullname"] = emp.fullname if emp else ""
+        u["shift_type"] = (assigned_shifts.get(emp.name) or {}).get("shift_type", "") if emp else ""
 
     return {"success": True, "users": users, "count": len(users)}
 
@@ -162,14 +270,20 @@ def map_device_employees(device_name, mappings):
     """
     Save employee mappings from the "Browse Employees On Device" dialog.
 
-    mappings is a list of {user_id, employee} dicts (possibly a JSON string
-    when sent from JS). For every device user_id the Employee's
-    attendance_device_id is set to that user_id and zk_biometric_device is
-    set to this device — the combination the sync engine requires to match
-    a punch to an employee. Passing employee="" clears the mapping for
-    that device user. Previously-mapped employees of this device whose
-    user_id is no longer present in mappings are unmapped (their
-    attendance_device_id is cleared) so stale mappings never linger.
+    mappings is a list of {user_id, employee, shift_type} dicts (possibly a
+    JSON string when sent from JS; shift_type is optional). For every device
+    user_id the Employee's attendance_device_id is set to that user_id and
+    zk_biometric_device is set to this device — the combination the sync
+    engine requires to match a punch to an employee. Passing employee=""
+    clears the mapping for that device user. Previously-mapped employees of
+    this device whose user_id is no longer present in mappings are unmapped
+    (their attendance_device_id is cleared) so stale mappings never linger.
+
+    shift_type moves the employee into the active ZK Shift Assignment for
+    that ZK Shift Type (creating the assignment if needed); an empty
+    shift_type removes the employee from their current assignment. Rows
+    that omit the shift_type key entirely leave shift assignments
+    untouched (backward compatibility with older callers).
     """
     frappe.only_for(["System Manager", "HR Manager", "Biometric Device Manager"])
 
@@ -190,6 +304,7 @@ def map_device_employees(device_name, mappings):
     seen_ids = set()
     employees_to_map = {}   # employee -> user_id
     ids_to_clear = set()    # user_ids explicitly unmapped
+    shifts_by_employee = {}  # employee -> requested shift_type ("") to unassign
 
     for m in mappings:
         if not isinstance(m, dict) or not m.get("user_id"):
@@ -216,6 +331,28 @@ def map_device_employees(device_name, mappings):
                 )
             )
 
+        # Shift changes are opt-in per row: only rows that explicitly carry
+        # a shift_type key are processed, so legacy payloads (and rows that
+        # omit the field) never touch existing shift assignments. An empty
+        # value unassigns the employee; a value names the ZK Shift Type to
+        # move them to.
+        if "shift_type" in m:
+            shift_type = (m.get("shift_type") or "").strip()
+
+            if shift_type and not frappe.db.exists("ZK Shift Type", shift_type):
+                frappe.throw(_("ZK Shift Type {0} does not exist.").format(shift_type))
+
+            if shift_type:
+                shift_company = frappe.db.get_value("ZK Shift Type", shift_type, "company")
+                if device.company and shift_company and shift_company != device.company:
+                    frappe.throw(
+                        _("ZK Shift Type {0} belongs to company {1}, but the device is set up for {2}.").format(
+                            shift_type, shift_company, device.company
+                        )
+                    )
+
+            shifts_by_employee[employee] = shift_type
+
         employees_to_map[employee] = user_id
 
     # ── Unmap device ids no longer mapped (stale mappings cleanup) ─────
@@ -239,12 +376,21 @@ def map_device_employees(device_name, mappings):
             "zk_biometric_device": device.name,
         }, update_modified=True)
 
+    # ── Apply requested ZK Shift Assignments ───────────────────────────
+    # "changed" means created / moved / removed; "skipped" means the
+    # employee is already in the requested state.
+    shifts_changed = 0
+    for employee, shift_type in shifts_by_employee.items():
+        if _apply_shift_assignment(employee, shift_type, device.company):
+            shifts_changed += 1
+
     frappe.db.commit()
 
     return {
         "success": True,
         "mapped": len(employees_to_map),
         "unmapped": len(ids_to_clear),
+        "shifts_assigned": shifts_changed,
     }
 
 
