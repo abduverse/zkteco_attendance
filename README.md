@@ -26,8 +26,23 @@ bench --site frappe.com migrate
 bench restart
 ```
 
+### Update
+
+### To update when there changes after installations
+
+```bash
+cd ~/frappe-bench/apps/zkteco_attendance
+git pull
+
+cd ~/frappe-bench
+bench --site frappe.com migrate
+bench build --app zkteco_attendance
+bench restart
+```
+
 ### To Uninstall and Clean up if needed
 ```bash
+cd ~/frappe-bench
 bench --site frappe.com uninstall-app zkteco_attendance 2>/dev/null; true
 rm -rf ~/frappe-bench/apps/zkteco_attendance
 sed -i '/zkteco_attendance/d' ~/frappe-bench/sites/apps.txt
