@@ -252,7 +252,7 @@ def get_device_users(device_name):
                 "zk_biometric_device": device.name,
                 "status": "Active",
             },
-            fields=["name", "employee_name", "attendance_device_id", "first_name", "fullname"],
+            fields=["name", "employee_name", "attendance_device_id"],
         )
         for row in rows:
             mapped_by_id[str(row.attendance_device_id)] = row
@@ -269,8 +269,6 @@ def get_device_users(device_name):
         emp = mapped_by_id.get(u["user_id"])
         u["employee"] = emp.name if emp else ""
         u["employee_name"] = emp.employee_name if emp else ""
-        u["first_name"] = emp.first_name if emp else ""
-        u["fullname"] = emp.fullname if emp else ""
         u["shift_type"] = (assigned_shifts.get(emp.name) or {}).get("shift_type", "") if emp else ""
 
     return {"success": True, "users": users, "count": len(users)}
@@ -604,6 +602,10 @@ def create_manual_checkin_request(employee=None, checkin_date=None, checkin_time
     Create a Manual Checkin Request (Draft) from the Daily Checkins page or
     the Attendance Summary "Add Check-in" button.
 
+    request_type "Make Present" ignores log_type: submitting the request
+    creates IN and OUT checkins derived from the employee's shift, and is
+    only allowed for a day that has no checkins at all.
+
     The Employee Checkin is NOT touched here — it is only created or updated
     when the request document is submitted (see ManualCheckinRequest.on_submit).
     """
@@ -612,14 +614,19 @@ def create_manual_checkin_request(employee=None, checkin_date=None, checkin_time
 
     if not employee or not checkin_date or not checkin_time:
         frappe.throw(_("Employee, Check-in Date, and Check-in Time are required."))
-    if log_type not in ("IN", "OUT"):
-        frappe.throw(_("Log Type must be IN or OUT."))
     if not request_type:
         request_type = "New"
-    if request_type not in ("New", "Edit"):
-        frappe.throw(_("Request Type must be New or Edit."))
+    if request_type not in ("New", "Edit", "Make Present"):
+        frappe.throw(_("Request Type must be New, Edit, or Make Present."))
     if request_type == "Edit" and not checkin_name:
         frappe.throw(_("An Existing Check-in must be set when Request Type is Edit."))
+    if request_type == "Make Present":
+        # Log Type does not apply - the IN and OUT checkins are derived from
+        # the employee's shift when the request is submitted.
+        log_type = None
+        is_overtime = 0
+    elif log_type not in ("IN", "OUT"):
+        frappe.throw(_("Log Type must be IN or OUT."))
 
     doc = frappe.get_doc({
         "doctype": "Manual Checkin Request",

@@ -169,6 +169,20 @@ automatically — punches for each employee/day are alternated IN, OUT, IN,
 OUT in chronological order. Explicit overtime punches (codes 4/5, if
 enabled) are flagged with the **Overtime Punch** checkbox instead.
 
+**Manual corrections** (Checkin Editor role) are made on the Daily Checkins
+page and applied via **Manual Checkin Request** documents on submit:
+
+- **Add** — creates a single IN or OUT check-in at the chosen time.
+- **Edit** — modifies an existing check-in (cancelling the request restores
+  the original values).
+- **Make Present** — offered beside Add only for a day that has **no
+  check-ins at all**; it creates both an IN and an OUT check-in for the day.
+  Log Type is not used: IN is placed at the employee's shift start and OUT
+  at shift end (a night shift's OUT rolls into the next day); without a
+  shift, IN is the entered time and OUT is entered time + 8 hours. If any
+  check-in already exists for that day, the request is rejected with an
+  error. Cancelling a Make Present request deletes both check-ins.
+
 **Test Connection** can be run at any time to re-check connectivity without
 pulling data.
 

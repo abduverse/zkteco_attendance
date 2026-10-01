@@ -1155,11 +1155,9 @@ def get_daily_checkins_data(attendance_summary=None, from_date=None, to_date=Non
 
     checkins_by_employee = fetch_checkins(employee_list, from_date, to_date)
 
-    # Resolve employee names for standalone mode
-    # `full_name` only exists on Employee in newer HRMS versions; fall back to
-    # employee_name otherwise so the Daily Checkins page header always gets
-    # the employee's display name under `fullname`.
-    has_full_name_col = bool(employee_list) and has_column("Employee", "fullname")
+    # Resolve employee names for standalone mode. Employee.employee_name is
+    # the display name used everywhere (the old `fullname` column probe was
+    # dropped: it only exists on non-standard HRMS installations).
     emp_info = {}
     if employee_list:
         emp_filters = {"name": ["in", employee_list]}
@@ -1168,12 +1166,10 @@ def get_daily_checkins_data(attendance_summary=None, from_date=None, to_date=Non
         emp_fields = ["name", "employee_name", "department",
                       "designation", "zk_biometric_device",
                       "attendance_device_id"]
-        if has_full_name_col:
-            emp_fields.append("fullname")
         rows = frappe.get_all("Employee",
                               filters=emp_filters,
                               fields=emp_fields)
-        emp_info = {r.name: r for r in rows}
+        emp_info = {(r.name if hasattr(r, "name") else r.get("name")): r for r in rows}
 
     employees = []
     for emp_id in employee_list:
@@ -1196,8 +1192,6 @@ def get_daily_checkins_data(attendance_summary=None, from_date=None, to_date=Non
             zk_device = info.get("zk_biometric_device") or ""
             att_dev_id = info.get("attendance_device_id") or ""
 
-        fullname = (info.get("fullname") or "").strip() or emp_name
-
         days = get_employee_daily_breakdown(
             employee=emp_id,
             from_date=from_date,
@@ -1214,7 +1208,6 @@ def get_daily_checkins_data(attendance_summary=None, from_date=None, to_date=Non
         employees.append({
             "employee":             emp_id,
             "employee_name":        emp_name,
-            "fullname":             fullname,
             "department":           dept,
             "designation":          desig,
             "zk_biometric_device":  zk_device,

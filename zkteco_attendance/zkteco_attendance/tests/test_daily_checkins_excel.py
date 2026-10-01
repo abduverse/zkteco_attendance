@@ -59,11 +59,10 @@ def _checkin(time_str, log_type="IN", **overrides):
     return checkin
 
 
-def _employee(employee="EMP-0001", fullname="John Smith", days=None, **overrides):
+def _employee(employee="EMP-0001", employee_name="John Smith", days=None, **overrides):
     emp = {
         "employee": employee,
-        "employee_name": fullname,
-        "fullname": fullname,
+        "employee_name": employee_name,
         "department": "Production",
         "designation": "Operator",
         "zk_biometric_device": "DEV-01",
@@ -96,7 +95,7 @@ def _sample_data():
                          _checkin("17:30:00", "OUT"),
                      ]),
             ]),
-            _employee(employee="EMP-0002", fullname="Jane Roe",
+            _employee(employee="EMP-0002", employee_name="Jane Roe",
                       department="Finance", designation="",
                       zk_biometric_device="DEV-02",
                       attendance_device_id="102", shift_type="",

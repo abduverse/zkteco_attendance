@@ -479,11 +479,8 @@ function showEmployeeMappingDialog(frm, res) {
         const badge = u.employee
             ? `<span class="label label-success" style="display:inline-block; padding:4px 9px; border-radius:999px; font-size:11px; font-weight:600; line-height:1.2;" title="${frappe.utils.escape_html(u.employee_name || u.employee)}">${__("Mapped")}</span>`
             : `<span class="label" style="display:inline-block; padding:4px 9px; border-radius:999px; font-size:11px; font-weight:600; line-height:1.2; background:#fef3c7; color:#92400e;" title="${__("Not mapped")}">${__("Not mapped")}</span>`;
-        const emp_label = u.employee
-            ? frappe.utils.escape_html(u.employee_name || u.employee)
-            : "";
         const emp_label_name = u.employee
-            ? frappe.utils.escape_html(u.fullname || u.first_name)
+            ? frappe.utils.escape_html(u.employee_name || u.employee)
             : "";
         return `
             <tr class="zk-emp-row" data-user-id="${frappe.utils.escape_html(u.user_id)}">

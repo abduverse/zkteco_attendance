@@ -168,6 +168,14 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
         show_checkin_dialog({ employee: emp, date, summary, mode: "add" });
     });
 
+    // Make Present: offered only for days with no check-ins (like Add).
+    $body.on("click", ".zk-make-present", function () {
+        const emp     = $(this).data("employee");
+        const date    = $(this).data("date");
+        const summary = $(this).data("summary");
+        show_checkin_dialog({ employee: emp, date, summary, mode: "make_present" });
+    });
+
     $body.on("click", ".zk-edit-checkin", function (e) {
         e.stopPropagation();
         const emp     = $(this).data("employee");
@@ -722,11 +730,22 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                 <i class="fa fa-plus"></i>${with_label ? ` ${__("Add")}` : ""}
             </button>`;
 
+        // Make Present only makes sense for a day with no check-ins at all,
+        // so the button is offered beside Add only in the empty state.
+        const make_present_btn = (with_label) => `
+            <button class="btn btn-xs btn-default zk-make-present"
+                    data-employee="${frappe.utils.escape_html(emp)}"
+                    data-date="${date}"
+                    data-summary="${summary_attr}"
+                    style="margin-left:6px;">
+                <i class="fa fa-check-circle-o"></i>${with_label ? ` ${__("Make Present")}` : ""}
+            </button>`;
+
         if (!checkins || !checkins.length) {
             if (!state.can_edit_checkins) {
                 return `<span class="text-muted">${__("No check-ins")}</span>`;
             }
-            return `<span class="text-muted">${__("No check-ins")}</span>${add_btn(true)}`;
+            return `<span class="text-muted">${__("No check-ins")}</span>${add_btn(true)}${make_present_btn(true)}`;
         }
 
         const chips = checkins.map((c, idx) => {
@@ -902,7 +921,7 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                 <div class="zk-emp-card" data-employee="${frappe.utils.escape_html(emp.employee)}" style="margin-bottom:4px; border: 1px solid #a19999">
                     <div class="zk-emp-card-head" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border:1px solid var(--border-color);border-radius:var(--border-radius);background:var(--card-bg);">
                         <div>
-                            <span class="text-muted" style="margin-left:8px; border:1px solid #e4e3e3; border-radius:var(--border-radius); padding:2px 4px;"><b>Emp Name:</b> ${frappe.utils.escape_html(emp.fullname || emp.employee_name || emp.employee)}</span>
+                            <span class="text-muted" style="margin-left:8px; border:1px solid #e4e3e3; border-radius:var(--border-radius); padding:2px 4px;"><b>Emp Name:</b> ${frappe.utils.escape_html(emp.employee_name || emp.employee)}</span>
                             <span class="text-muted" style="margin-left:8px; border:1px solid #e4e3e3; border-radius:var(--border-radius); padding:2px 4px;"><b>Emp ID:</b> ${frappe.utils.escape_html(emp.employee)}</span>
                             <span class="text-muted" style="margin-left:8px; border:1px solid #e4e3e3; border-radius:var(--border-radius); padding:2px 4px;">${deviceInfo.join("")}</span>
                         </div>
@@ -1070,8 +1089,11 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
             });
         }
 
+        const isMakePresent = mode === "make_present";
+
         const d = new frappe.ui.Dialog({
-            title: mode === "edit" ? __("Edit Check-in") : __("Add Check-in"),
+            title: mode === "edit" ? __("Edit Check-in")
+                : isMakePresent ? __("Make Present") : __("Add Check-in"),
             size: "large",
             fields: [
                 { fieldtype: "HTML", fieldname: "shift_info" },
@@ -1079,8 +1101,9 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                 { fieldtype: "Link", fieldname: "employee", label: __("Employee"),
                   options: "Employee", default: employee, read_only: 1 },
                 { fieldtype: "Select", fieldname: "request_type", label: __("Request Type"),
-                  options: "New\nEdit", default: mode === "edit" ? "Edit" : "New", reqd: 1,
-                  description: __("Edit modifies the existing check-in; New adds one.") },
+                  options: "New\nEdit\nMake Present",
+                  default: mode === "edit" ? "Edit" : (isMakePresent ? "Make Present" : "New"), reqd: 1,
+                  description: __("Edit modifies the existing check-in; New adds one; Make Present creates IN and OUT checkins for a day that has none.") },
                 { fieldtype: "Date", fieldname: "checkin_date", label: __("Date"),
                   default: date, reqd: 1 },
                 { fieldtype: "Time", fieldname: "checkin_time", label: __("Time"),
@@ -1093,15 +1116,17 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                 { fieldtype: "Small Text", fieldname: "zk_remark", label: __("Remark"),
                   default: remark || "", description: __("Optional note stored on the check-in when the request is submitted") },
             ],
-            primary_action_label: mode === "edit" ? __("Create Request") : __("Create Request"),
+            primary_action_label: __("Create Request"),
             primary_action(vals) {
                 if (!vals.checkin_date || !vals.checkin_time) {
                     frappe.msgprint(__("Date and Time are required."));
                     return;
                 }
+                const makePresent = (vals.request_type || "") === "Make Present";
                 // Create a Manual Checkin Request instead of touching the
                 // checkin directly — the checkin is applied when the request
-                // document is submitted.
+                // document is submitted. Make Present requests carry no log
+                // type: IN and OUT are derived from the employee's shift.
                 frappe.call({
                     method: "zkteco_attendance.zkteco_attendance.page.zk_daily_checkins.zk_daily_checkins.create_manual_checkin_request",
                     args: {
@@ -1110,9 +1135,9 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                         request_type:       vals.request_type || "New",
                         checkin_date:       vals.checkin_date,
                         checkin_time:       vals.checkin_time,
-                        log_type:           vals.log_type,
+                        log_type:           makePresent ? null : vals.log_type,
                         checkin_name:       checkin_name || null,
-                        is_overtime:        vals.is_overtime ? 1 : 0,
+                        is_overtime:        makePresent ? 0 : (vals.is_overtime ? 1 : 0),
                         remarks:            vals.zk_remark || null,
                     },
                     freeze: true,
@@ -1130,6 +1155,19 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                 });
             },
         });
+        // Make Present carries no log type: IN and OUT come from the
+        // employee's shift, so Log Type / Is Overtime are hidden whenever
+        // the Make Present request type is selected.
+        const toggle_make_present_fields = () => {
+            const isMP = (d.get_value("request_type") || "") === "Make Present";
+            ["log_type", "is_overtime"].forEach((fname) => {
+                const f = d.get_field(fname);
+                if (f && f.$wrapper) f.$wrapper.toggle(!isMP);
+            });
+        };
+        d.fields_dict.request_type.$input.on("change", toggle_make_present_fields);
+        toggle_make_present_fields();
+
         d.show();
         // Fetch shift info after dialog DOM is fully rendered
         frappe.after_ajax(() => {

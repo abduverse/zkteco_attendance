@@ -1123,10 +1123,10 @@ class TestDailyCheckinsBiometricDeviceFilter(unittest.TestCase):
         mock_fetch.assert_called_once()
         fetched_list = mock_fetch.call_args[0][0]
         self.assertEqual(fetched_list, ["EMP-A", "EMP-C"])
-        # Page header name field: `fullname` must be populated for every employee
+        # Page header name field: `employee_name` must be populated for every employee
         by_emp = {e["employee"]: e for e in result["employees"]}
-        self.assertEqual(by_emp["EMP-A"]["fullname"], "EMP A")
-        self.assertEqual(by_emp["EMP-C"]["fullname"], "EMP C")
+        self.assertEqual(by_emp["EMP-A"]["employee_name"], "EMP A")
+        self.assertEqual(by_emp["EMP-C"]["employee_name"], "EMP C")
 
     @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_shift_for_employee")
     @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_employee_daily_breakdown")
@@ -1167,7 +1167,7 @@ class TestDailyCheckinsBiometricDeviceFilter(unittest.TestCase):
 
         emp_ids = [e["employee"] for e in result["employees"]]
         self.assertEqual(emp_ids, ["EMP-A"])
-        self.assertEqual(result["employees"][0]["fullname"], "EMP A")
+        self.assertEqual(result["employees"][0]["employee_name"], "EMP A")
 
     @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_shift_for_employee")
     @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_employee_daily_breakdown")
@@ -1270,8 +1270,8 @@ class TestDailyCheckinsProjectFilter(unittest.TestCase):
         mock_fetch.assert_called_once()
         self.assertEqual(mock_fetch.call_args[0][0], ["EMP-A", "EMP-C"])
         by_emp = {e["employee"]: e for e in result["employees"]}
-        self.assertEqual(by_emp["EMP-A"]["fullname"], "EMP A")
-        self.assertEqual(by_emp["EMP-C"]["fullname"], "EMP C")
+        self.assertEqual(by_emp["EMP-A"]["employee_name"], "EMP A")
+        self.assertEqual(by_emp["EMP-C"]["employee_name"], "EMP C")
 
     @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_shift_for_employee")
     @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_employee_daily_breakdown")
@@ -1314,7 +1314,7 @@ class TestDailyCheckinsProjectFilter(unittest.TestCase):
 
         emp_ids = [e["employee"] for e in result["employees"]]
         self.assertEqual(emp_ids, ["EMP-A"])
-        self.assertEqual(result["employees"][0]["fullname"], "EMP A")
+        self.assertEqual(result["employees"][0]["employee_name"], "EMP A")
 
     @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_shift_for_employee")
     @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_employee_daily_breakdown")

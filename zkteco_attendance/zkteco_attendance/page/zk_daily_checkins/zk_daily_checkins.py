@@ -93,7 +93,7 @@ def get_invalid_days(attendance_summary=None, from_date=None, to_date=None,
 
         invalids.append({
             "employee":      emp.get("employee"),
-            "employee_name": emp.get("fullname") or emp.get("employee_name") or emp.get("employee"),
+            "employee_name": emp.get("employee_name") or emp.get("employee"),
             "department":    emp.get("department") or "",
             "shift_type":    emp.get("shift_type") or "",
             "invalid_count": len(invalid_dates),
@@ -566,7 +566,7 @@ def _employee_table(emp):
 
 
 def _employee_block(emp):
-    name = (emp.get("fullname") or emp.get("employee_name") or emp.get("employee") or "")
+    name = (emp.get("employee_name") or emp.get("employee") or "")
 
     meta_parts = []
     if emp.get("employee"):
@@ -820,7 +820,7 @@ def _employee_summary(emp):
 
 
 def _emp_display_name(emp):
-    return (emp.get("fullname") or emp.get("employee_name") or emp.get("employee") or "")
+    return (emp.get("employee_name") or emp.get("employee") or "")
 
 
 def _build_excel_workbook(data):

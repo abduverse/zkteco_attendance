@@ -247,6 +247,7 @@
   }
  ],
  "sort_field": "modified",
+ "search_fields": "company,device_name,device_ip,port,location",
  "sort_order": "DESC",
  "track_changes": 1
 }

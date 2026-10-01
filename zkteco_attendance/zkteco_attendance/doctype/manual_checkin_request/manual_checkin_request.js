@@ -2,8 +2,9 @@
 frappe.ui.form.on("Manual Checkin Request", {
 
     request_type(frm) {
-        // A "New" request must not reference an existing check-in
-        if (frm.doc.request_type === "New" && frm.doc.checkin_name) {
+        // A "New" or "Make Present" request must not reference an existing
+        // check-in (only "Edit" does).
+        if (frm.doc.request_type !== "Edit" && frm.doc.checkin_name) {
             frm.set_value("checkin_name", "");
         }
     },
@@ -20,6 +21,20 @@ frappe.ui.form.on("Manual Checkin Request", {
                 frm.dashboard.add_comment(
                     __("Check-in <b>{0}</b> has been applied to the attendance records.", [frm.doc.applied_checkin]),
                     "green",
+                    true
+                );
+            }
+            if (frm.doc.applied_checkin_out) {
+                frm.dashboard.add_comment(
+                    __("OUT Check-in <b>{0}</b> has been applied to the attendance records.", [frm.doc.applied_checkin_out]),
+                    "green",
+                    true
+                );
+            }
+            if (frm.doc.request_type === "Make Present") {
+                frm.dashboard.add_comment(
+                    __("Cancelling this Make Present request will delete both the IN and the OUT check-in it created."),
+                    "orange",
                     true
                 );
             }

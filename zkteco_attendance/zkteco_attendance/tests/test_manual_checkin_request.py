@@ -10,6 +10,10 @@ Cancelling a submitted request reverts the applied check-in: "Edit"
 requests restore the original values snapshotted on submit, while "New"
 requests delete the check-in they created.
 
+"Make Present" requests create BOTH an IN and an OUT check-in for a day
+that has no check-ins at all (validation throws otherwise); the times come
+from the employee's shift, falling back to the entered time + 8h.
+
 Run with: bench run-tests --app zkteco_attendance
 """
 
@@ -373,6 +377,165 @@ class TestCreateManualCheckinRequestEndpoint(unittest.TestCase):
             create_manual_checkin_request(
                 employee="HR-EMP-00001", checkin_date="2026-08-10",
                 checkin_time="08:00:00", log_type="FOO")
+
+
+
+class TestManualCheckinRequestMakePresent(unittest.TestCase):
+    """"Make Present" creates IN + OUT checkins for a day with none."""
+
+    def _mp_doc(self, **overrides):
+        data = _request_dict(request_type="Make Present", log_type=None, is_overtime=0)
+        data.update(overrides)
+        return frappe.get_doc(data)
+
+    def _shift(self, **overrides):
+        shift = frappe._dict({
+            "name": "Morning", "start_time": "08:00:00", "end_time": "17:00:00",
+            "is_night_shift": 0, "saturday_mode": "Full Day",
+            "full_day_hours": 8, "half_day_hours": 4, "saturday_half_day_hours": 4,
+        })
+        shift.update(overrides)
+        return shift
+
+    @patch("frappe.db.get_value", return_value="Acme")
+    @patch("zkteco_attendance.zkteco_attendance.doctype.manual_checkin_request.manual_checkin_request.frappe.get_all",
+           return_value=[frappe._dict({"name": "CHK-001", "log_type": "IN"})])
+    def test_validate_throws_when_day_has_checkins(self, mock_get_all, mock_get_value):
+        """Make Present is rejected for a day that already has check-ins."""
+        doc = self._mp_doc()
+        with self.assertRaises(frappe.ValidationError):
+            doc.validate()
+
+    @patch("frappe.db.get_value", return_value="Acme")
+    @patch("zkteco_attendance.zkteco_attendance.doctype.manual_checkin_request.manual_checkin_request.frappe.get_all",
+           return_value=[])
+    def test_validate_clears_log_type_when_day_is_free(self, mock_get_all, mock_get_value):
+        """A free day validates and Log Type / Is Overtime are cleared."""
+        doc = self._mp_doc(log_type="IN", is_overtime=1)
+        doc.validate()
+        self.assertIsNone(doc.log_type)
+        self.assertEqual(doc.is_overtime, 0)
+
+    @patch("frappe.db.set_value")
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_shift_for_employee")
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.save_manual_checkin_record")
+    @patch("zkteco_attendance.zkteco_attendance.doctype.manual_checkin_request.manual_checkin_request.frappe.get_all",
+           return_value=[])
+    def test_on_submit_creates_in_and_out_from_shift(self, mock_get_all, mock_save,
+                                                     mock_shift, mock_set_value):
+        """IN at shift start and OUT at shift end when a shift is assigned."""
+        mock_shift.return_value = self._shift()
+        mock_save.side_effect = [{"name": "CHK-IN-001"}, {"name": "CHK-OUT-001"}]
+
+        doc = self._mp_doc()
+        doc.on_submit()
+
+        first, second = mock_save.call_args_list
+        self.assertEqual(first.kwargs["log_type"], "IN")
+        self.assertEqual(first.kwargs["checkin_time"], "2026-08-10 08:00:00")
+        self.assertEqual(second.kwargs["log_type"], "OUT")
+        self.assertEqual(second.kwargs["checkin_time"], "2026-08-10 17:00:00")
+
+        db_sets = {c.args[2]: c.args[3] for c in mock_set_value.call_args_list}
+        self.assertEqual(db_sets.get("applied_checkin"), "CHK-IN-001")
+        self.assertEqual(db_sets.get("applied_checkin_out"), "CHK-OUT-001")
+
+    @patch("frappe.db.set_value")
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_shift_for_employee",
+           return_value=None)
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.save_manual_checkin_record")
+    @patch("zkteco_attendance.zkteco_attendance.doctype.manual_checkin_request.manual_checkin_request.frappe.get_all",
+           return_value=[])
+    def test_on_submit_no_shift_uses_entered_time_plus_8h(self, mock_get_all, mock_save,
+                                                           mock_shift, mock_set_value):
+        """Without a shift, OUT is the entered time + 8 standard hours."""
+        mock_save.side_effect = [{"name": "CHK-IN-002"}, {"name": "CHK-OUT-002"}]
+
+        doc = self._mp_doc(checkin_time="09:30:00")
+        doc.on_submit()
+
+        first, second = mock_save.call_args_list
+        self.assertEqual(first.kwargs["checkin_time"], "2026-08-10 09:30:00")
+        self.assertEqual(second.kwargs["checkin_time"], "2026-08-10 17:30:00")
+
+    @patch("frappe.db.set_value")
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_shift_for_employee")
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.save_manual_checkin_record")
+    @patch("zkteco_attendance.zkteco_attendance.doctype.manual_checkin_request.manual_checkin_request.frappe.get_all",
+           return_value=[])
+    def test_on_submit_night_shift_out_is_next_day(self, mock_get_all, mock_save,
+                                                    mock_shift, mock_set_value):
+        """A night shift's OUT check-in lands on the next calendar day."""
+        mock_shift.return_value = self._shift(
+            start_time="22:00:00", end_time="06:00:00", is_night_shift=1)
+        mock_save.side_effect = [{"name": "CHK-IN-003"}, {"name": "CHK-OUT-003"}]
+
+        doc = self._mp_doc()
+        doc.on_submit()
+
+        first, second = mock_save.call_args_list
+        self.assertEqual(first.kwargs["checkin_time"], "2026-08-10 22:00:00")
+        self.assertEqual(second.kwargs["checkin_time"], "2026-08-11 06:00:00")
+
+    @patch("frappe.db.set_value")
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.save_manual_checkin_record")
+    @patch("zkteco_attendance.zkteco_attendance.doctype.manual_checkin_request.manual_checkin_request.frappe.get_all",
+           return_value=[frappe._dict({"name": "CHK-001"})])
+    def test_on_submit_throws_when_day_has_checkins(self, mock_get_all, mock_save,
+                                                     mock_set_value):
+        """Submitting is re-validated: a day with check-ins must not change."""
+        doc = self._mp_doc()
+        with self.assertRaises(frappe.ValidationError):
+            doc.on_submit()
+        mock_save.assert_not_called()
+
+    @patch("frappe.db.commit")
+    @patch("zkteco_attendance.zkteco_attendance.doctype.manual_checkin_request.manual_checkin_request.frappe.delete_doc")
+    @patch("zkteco_attendance.zkteco_attendance.doctype.manual_checkin_request.manual_checkin_request.frappe.db.exists",
+           return_value=True)
+    def test_on_cancel_deletes_both_checkins(self, mock_exists, mock_delete, mock_commit):
+        """Cancelling a Make Present request deletes IN and OUT checkins."""
+        doc = self._mp_doc()
+        doc.applied_checkin = "CHK-IN-001"
+        doc.applied_checkin_out = "CHK-OUT-001"
+        doc.on_cancel()
+
+        deleted = [c.args[1] for c in mock_delete.call_args_list]
+        self.assertEqual(deleted, ["CHK-IN-001", "CHK-OUT-001"])
+
+
+class TestMakePresentEndpoint(unittest.TestCase):
+    """The endpoint accepts Make Present and neutralises log_type."""
+
+    @patch("frappe.db.commit")
+    @patch("frappe.get_doc")
+    def test_endpoint_make_present_ignores_log_type(self, mock_get_doc, mock_commit):
+        from zkteco_attendance.zkteco_attendance.api.endpoints import create_manual_checkin_request
+
+        fake_doc = MagicMock()
+        fake_doc.name = "MAN-CHK-2026-00010"
+        mock_get_doc.return_value = fake_doc
+
+        create_manual_checkin_request(
+            employee="HR-EMP-00001",
+            checkin_date="2026-08-10",
+            checkin_time="08:00:00",
+            log_type="IN",
+            request_type="Make Present",
+        )
+
+        inserted = mock_get_doc.call_args[0][0]
+        self.assertEqual(inserted["request_type"], "Make Present")
+        self.assertIsNone(inserted["log_type"])
+        self.assertEqual(inserted["is_overtime"], 0)
+
+    def test_endpoint_rejects_bad_request_type(self):
+        from zkteco_attendance.zkteco_attendance.api.endpoints import create_manual_checkin_request
+
+        with self.assertRaises(frappe.ValidationError):
+            create_manual_checkin_request(
+                employee="HR-EMP-00001", checkin_date="2026-08-10",
+                checkin_time="08:00:00", log_type="IN", request_type="Bogus")
 
 
 if __name__ == "__main__":

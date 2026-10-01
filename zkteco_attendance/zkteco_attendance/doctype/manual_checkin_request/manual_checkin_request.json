@@ -53,13 +53,13 @@
   },
   {
    "default": "New",
-   "description": "New adds a check-in; Edit modifies the existing check-in referenced below.",
+   "description": "New adds a check-in; Edit modifies the existing check-in referenced below; Make Present creates IN and OUT check-ins for a day that has none.",
    "fieldname": "request_type",
    "fieldtype": "Select",
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Request Type",
-   "options": "New\nEdit",
+   "options": "New\nEdit\nMake Present",
    "reqd": 1
   },
   {
@@ -82,14 +82,16 @@
   },
   {
    "default": "IN",
+   "depends_on": "eval:doc.request_type != 'Make Present'",
    "fieldname": "log_type",
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Log Type",
-   "options": "IN\nOUT",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.request_type != 'Make Present'",
+   "options": "IN\nOUT"
   },
   {
+   "depends_on": "eval:doc.request_type != 'Make Present'",
    "description": "Mark this punch as an overtime punch.",
    "fieldname": "is_overtime",
    "fieldtype": "Check",
@@ -127,6 +129,14 @@
    "read_only": 1
   },
   {
+   "description": "The OUT Employee Checkin created by a Make Present request when it was submitted.",
+   "fieldname": "applied_checkin_out",
+   "fieldtype": "Link",
+   "label": "Applied Check-in (OUT)",
+   "options": "Employee Checkin",
+   "read_only": 1
+  },
+  {
    "description": "Original values of the edited check-in, captured when the request is submitted so cancelling the request can restore them.",
    "fieldname": "original_checkin_data",
    "fieldtype": "Long Text",
@@ -137,7 +147,7 @@
  ],
  "is_submittable": 1,
  "links": [],
- "modified": "2026-09-14 00:00:00.000000",
+ "modified": "2026-10-02 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Zkteco Attendance",
  "name": "Manual Checkin Request",

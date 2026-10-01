@@ -349,9 +349,7 @@
         }
     ],
     "sort_field": "shift_name",
-    "search_fields": [
-        "shift_name", "company", "start_time", "end_time"
-    ],
+    "search_fields": "company,start_time,end_time",
     "sort_order": "ASC",
     "allow_import": 1,
     "track_changes": 1
