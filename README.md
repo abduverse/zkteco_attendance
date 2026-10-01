@@ -86,7 +86,7 @@ Go to **Biometric Device** (new) and fill in:
 |---|---|
 | Device Name | Any label, must be unique |
 | Device IP / Port | Device's network address (default port 4370) |
-| Company | Company this device belongs to |
+| Company | Company this device belongs to. Optional when **Ignore Company Restriction** is enabled — in that case employees of ANY company can be mapped to the device and any company's Shift Type can be assigned |
 | Device Time Zone | Informational only — for troubleshooting. Device timestamps are stored as-is (see Clock Offset below) |
 | Connection Password | Only if the device has a comm key/password set |
 | Status | Set to **Active** once configured |
@@ -113,7 +113,9 @@ Employees:
   mapping.
 3. Search by device ID or name if needed. Select the rows to update, choose
   an **Employee** for each, and optionally choose a **Shift Type**. The
-  Employee must belong to the device's Company.
+  Employee must belong to the device's Company, unless the device has
+  **Ignore Company Restriction** enabled — then employees and shift types
+  of any company (or none) are accepted.
 4. Click **Map Selected Rows**. Only selected rows are changed. The mapping
   fills in **Biometric Device** and **Biometric Attendance ID** on each
   Employee; a selected row with no Employee clears that device user's
@@ -141,8 +143,11 @@ Create one or more **ZK Shift Type** records:
 
 ### 2.5 Assign shifts
 Use **ZK Shift Assignment** to assign a Shift Type to a group of employees
-(Status = Active). An employee can have only one active assignment; set
-the assignment to Inactive (or delete it) to unassign.
+(Status = Active). An employee can have only one active assignment — if an
+employee is added to a new Active assignment, they are automatically
+removed from their previous one (and duplicate rows within the same
+assignment are cleaned up). Set the assignment to Inactive (or delete it)
+to unassign.
 
 ---
 

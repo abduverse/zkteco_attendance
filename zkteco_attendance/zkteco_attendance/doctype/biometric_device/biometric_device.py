@@ -10,9 +10,17 @@ from frappe.model.document import Document
 class BiometricDevice(Document):
 
     def validate(self):
+        self._validate_company()
         self._validate_ip()
         self._validate_port()
         self._prevent_duplicate_ip()
+
+    def _validate_company(self):
+        # Company is optional when 'Ignore Company Restriction' is enabled.
+        if not self.ignore_company_restriction and not self.company:
+            frappe.throw(
+                _("Company is required unless 'Ignore Company Restriction' is enabled.")
+            )
 
     def _validate_ip(self):
         import re

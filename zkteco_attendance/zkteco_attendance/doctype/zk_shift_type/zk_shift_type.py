@@ -7,8 +7,16 @@ from datetime import datetime, timedelta
 class ZKShiftType(Document):
 
     def validate(self):
+        self._validate_company()
         self._validate_hours()
         self._validate_times()
+
+    def _validate_company(self):
+        # Company is optional when 'Ignore Company Restriction' is enabled.
+        if not self.ignore_company_restriction and not self.company:
+            frappe.throw(
+                _("Company is required unless 'Ignore Company Restriction' is enabled.")
+            )
 
     def _validate_hours(self):
         if self.half_day_hours >= self.full_day_hours:

@@ -12,6 +12,7 @@
   "port",
   "column_break_1",
   "company",
+  "ignore_company_restriction",
   "location",
   "status",
   "enable",
@@ -67,7 +68,14 @@
    "fieldtype": "Link",
    "label": "Company",
    "options": "Company",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.ignore_company_restriction != 1"
+  },
+  {
+   "default": "0",
+   "fieldname": "ignore_company_restriction",
+   "fieldtype": "Check",
+   "label": "Ignore Company Restriction",
+   "description": "When enabled, the Company field becomes optional and employees from ANY company can be mapped to this device (the same-company restriction is skipped), including ZK Shift Types of other companies. Leave it off for normal single-company devices."
   },
   {
    "fieldname": "location",
@@ -194,7 +202,7 @@
   }
  ],
  "links": [],
- "modified": "2026-09-29 00:00:00.000000",
+ "modified": "2026-10-01 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Zkteco Attendance",
  "name": "Biometric Device",

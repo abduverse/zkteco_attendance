@@ -118,8 +118,8 @@ def _get_active_shift_types(employees):
     """
     Return {employee: {"assignment": <ZK Shift Assignment>, "shift_type":
     <ZK Shift Type>}} for the given employees' active ZK Shift Assignment,
-    if any. An employee has at most one active assignment (enforced by
-    ZK Shift Assignment.validate).
+    if any. An employee has at most one active assignment (duplicates are
+    removed by ZK Shift Assignment.validate).
     """
     if not employees:
         return {}
@@ -178,23 +178,34 @@ def _apply_shift_assignment(employee, shift_type, device_company):
             )
 
     if shift_type:
-        target = frappe.get_all(
+        # Find the active assignment for this shift type whose company
+        # matches the device's company. A device without a company (i.e. one
+        # that ignores company restrictions) matches assignments without a
+        # company, so the filter is applied in Python on both sides.
+        candidates = frappe.get_all(
             "ZK Shift Assignment",
             filters={
                 "shift_type": shift_type,
-                "company": device_company,
                 "status": "Active",
             },
-            fields=["name"],
-            limit_page_length=1,
+            fields=["name", "company"],
         )
-        if target:
-            sa_doc = frappe.get_doc("ZK Shift Assignment", target[0].name)
+        target_name = None
+        for row in candidates:
+            if (row.company or "") == (device_company or ""):
+                target_name = row.name
+                break
+        if target_name:
+            sa_doc = frappe.get_doc("ZK Shift Assignment", target_name)
         else:
             sa_doc = frappe.new_doc("ZK Shift Assignment")
             sa_doc.shift_type = shift_type
             sa_doc.company = device_company
             sa_doc.status = "Active"
+            # An assignment without a company can only exist when company
+            # restrictions are ignored; mark it so its own validation passes.
+            if not device_company:
+                sa_doc.ignore_company_restriction = 1
 
         emp = frappe.db.get_value(
             "Employee", employee,
@@ -279,6 +290,10 @@ def map_device_employees(device_name, mappings):
     this device whose user_id is no longer present in mappings are unmapped
     (their attendance_device_id is cleared) so stale mappings never linger.
 
+    Employees normally must belong to the device's company. When the device
+    has 'Ignore Company Restriction' enabled, that check is skipped and
+    employees of any company (or none) can be mapped.
+
     shift_type moves the employee into the active ZK Shift Assignment for
     that ZK Shift Type (creating the assignment if needed); an empty
     shift_type removes the employee from their current assignment. Rows
@@ -324,7 +339,11 @@ def map_device_employees(device_name, mappings):
             frappe.throw(_("Employee {0} does not exist.").format(employee))
 
         emp_company = frappe.db.get_value("Employee", employee, "company")
-        if device.company and emp_company != device.company:
+        if (
+            device.company
+            and emp_company != device.company
+            and not device.ignore_company_restriction
+        ):
             frappe.throw(
                 _("Employee {0} belongs to company {1}, but the device is set up for {2}.").format(
                     employee, emp_company, device.company
@@ -344,7 +363,16 @@ def map_device_employees(device_name, mappings):
 
             if shift_type:
                 shift_company = frappe.db.get_value("ZK Shift Type", shift_type, "company")
-                if device.company and shift_company and shift_company != device.company:
+                shift_ignores = frappe.db.get_value(
+                    "ZK Shift Type", shift_type, "ignore_company_restriction"
+                )
+                if (
+                    device.company
+                    and shift_company
+                    and shift_company != device.company
+                    and not device.ignore_company_restriction
+                    and not shift_ignores
+                ):
                     frappe.throw(
                         _("ZK Shift Type {0} belongs to company {1}, but the device is set up for {2}.").format(
                             shift_type, shift_company, device.company

@@ -8,3 +8,4 @@ zkteco_attendance.patches.v1_7.add_lunch_break_hours
 zkteco_attendance.patches.v1_8.add_ignored_field
 zkteco_attendance.patches.v1_9.add_remark_field
 zkteco_attendance.patches.v1_10.add_sync_data_after
+zkteco_attendance.patches.v1_11.add_ignore_company_restriction

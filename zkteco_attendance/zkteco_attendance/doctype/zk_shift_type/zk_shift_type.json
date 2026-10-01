@@ -8,6 +8,7 @@
         "color",
         "column_break_1",
         "company",
+        "ignore_company_restriction",
         "is_active",
         "section_timing",
         "start_time",
@@ -69,7 +70,14 @@
             "fieldtype": "Link",
             "label": "Company",
             "options": "Company",
-            "reqd": 1
+            "mandatory_depends_on": "eval:doc.ignore_company_restriction != 1"
+        },
+        {
+            "fieldname": "ignore_company_restriction",
+            "fieldtype": "Check",
+            "label": "Ignore Company Restriction",
+            "default": "0",
+            "description": "When enabled, the Company field becomes optional and this shift type can be used by Biometric Devices and ZK Shift Assignments of ANY company (the same-company restriction is skipped)."
         },
         {
             "fieldname": "is_active",
@@ -307,7 +315,7 @@
         }
     ],
     "links": [],
-    "modified": "2024-01-01 00:00:00.000000",
+    "modified": "2026-10-01 00:00:00.000000",
     "modified_by": "Administrator",
     "owner": "Administrator",
     "module": "Zkteco Attendance",
@@ -341,6 +349,9 @@
         }
     ],
     "sort_field": "shift_name",
+    "search_fields": [
+        "shift_name", "company", "start_time", "end_time"
+    ],
     "sort_order": "ASC",
     "allow_import": 1,
     "track_changes": 1

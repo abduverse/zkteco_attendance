@@ -91,10 +91,11 @@ class TestGetDeviceUsersEndpoint(unittest.TestCase):
 class TestMapDeviceEmployeesEndpoint(unittest.TestCase):
     """map_device_employees persists / clears device-to-employee mappings."""
 
-    def _device(self, name="Test-ZK-Device", company="Acme"):
+    def _device(self, name="Test-ZK-Device", company="Acme", ignore_company=0):
         device = MagicMock()
         device.name = name
         device.company = company
+        device.ignore_company_restriction = ignore_company
         return device
 
     def test_rejects_non_list_mappings(self):
@@ -149,6 +150,39 @@ class TestMapDeviceEmployeesEndpoint(unittest.TestCase):
                 self.assertRaises(frappe.ValidationError):
             map_device_employees(
                 "Test-ZK-Device", mappings=[{"user_id": "100", "employee": "HR-EMP-00001"}])
+
+    @patch("zkteco_attendance.zkteco_attendance.api.endpoints.frappe.db.set_value")
+    def test_allows_cross_company_employee_when_ignore_restriction(
+            self, mock_set_value):
+        """With 'Ignore Company Restriction' on, employees of any company map."""
+        from zkteco_attendance.zkteco_attendance.api.endpoints import map_device_employees
+
+        with patch("frappe.get_doc", return_value=self._device(ignore_company=1)), \
+                patch("frappe.db.exists", return_value=True), \
+                patch("frappe.db.get_value", return_value="Other Co"), \
+                patch("frappe.get_all", return_value=[]), \
+                patch("frappe.db.commit"):
+            result = map_device_employees(
+                "Test-ZK-Device", mappings=[{"user_id": "100", "employee": "HR-EMP-00001"}])
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["mapped"], 1)
+
+    @patch("zkteco_attendance.zkteco_attendance.api.endpoints.frappe.db.set_value")
+    def test_allows_any_employee_when_device_has_no_company(self, mock_set_value):
+        """A device without a company (ignore flag on) accepts any employee."""
+        from zkteco_attendance.zkteco_attendance.api.endpoints import map_device_employees
+
+        with patch("frappe.get_doc", return_value=self._device(company=None, ignore_company=1)), \
+                patch("frappe.db.exists", return_value=True), \
+                patch("frappe.db.get_value", return_value="Other Co"), \
+                patch("frappe.get_all", return_value=[]), \
+                patch("frappe.db.commit"):
+            result = map_device_employees(
+                "Test-ZK-Device", mappings=[{"user_id": "100", "employee": "HR-EMP-00001"}])
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["mapped"], 1)
 
     @patch("zkteco_attendance.zkteco_attendance.api.endpoints.frappe.db.set_value")
     def test_sets_device_id_and_device_on_employee(self, mock_set_value):
@@ -237,10 +271,11 @@ class TestMapDeviceEmployeesEndpoint(unittest.TestCase):
 class TestMapDeviceEmployeesShifts(unittest.TestCase):
     """shift_type in mappings drives ZK Shift Assignment changes."""
 
-    def _device(self, name="Test-ZK-Device", company="Acme"):
+    def _device(self, name="Test-ZK-Device", company="Acme", ignore_company=0):
         device = MagicMock()
         device.name = name
         device.company = company
+        device.ignore_company_restriction = ignore_company
         return device
 
     @patch("zkteco_attendance.zkteco_attendance.api.endpoints._apply_shift_assignment")
@@ -298,6 +333,72 @@ class TestMapDeviceEmployeesShifts(unittest.TestCase):
         self.assertIn(call("ZK Shift Type", "Ghost Shift"), mock_exists.call_args_list)
 
     @patch("zkteco_attendance.zkteco_attendance.api.endpoints._apply_shift_assignment")
+    def test_allows_cross_company_shift_when_device_ignores_restriction(
+            self, mock_apply):
+        """With 'Ignore Company Restriction' on, any company's shift is allowed."""
+        from zkteco_attendance.zkteco_attendance.api.endpoints import map_device_employees
+
+        mappings = [{"user_id": "100", "employee": "HR-EMP-00001",
+                     "shift_type": "Night"}]
+        with patch("frappe.get_doc", return_value=self._device(ignore_company=1)), \
+                patch("frappe.db.exists", return_value=True), \
+                patch("frappe.db.get_value", return_value="Other Co"), \
+                patch("frappe.get_all", return_value=[]), \
+                patch("frappe.db.set_value"), \
+                patch("frappe.db.commit"):
+            result = map_device_employees("Test-ZK-Device", mappings=mappings)
+
+        mock_apply.assert_called_once_with("HR-EMP-00001", "Night", "Acme")
+        self.assertEqual(result["shifts_assigned"], 1)
+
+    @patch("zkteco_attendance.zkteco_attendance.api.endpoints._apply_shift_assignment")
+    def test_allows_cross_company_shift_when_shift_ignores_restriction(
+            self, mock_apply):
+        """A ZK Shift Type that ignores company restrictions is usable by any device."""
+        from zkteco_attendance.zkteco_attendance.api.endpoints import map_device_employees
+
+        def fake_get_value(doctype, name, field):
+            if doctype == "Employee":
+                return "Acme"       # employee matches the device company
+            if field == "company":
+                return "Other Co"   # shift type belongs to another company
+            return 1                # ignore_company_restriction on the shift type
+
+        mappings = [{"user_id": "100", "employee": "HR-EMP-00001",
+                     "shift_type": "Night"}]
+        with patch("frappe.get_doc", return_value=self._device()), \
+                patch("frappe.db.exists", return_value=True), \
+                patch("frappe.db.get_value", side_effect=fake_get_value), \
+                patch("frappe.get_all", return_value=[]), \
+                patch("frappe.db.set_value"), \
+                patch("frappe.db.commit"):
+            result = map_device_employees("Test-ZK-Device", mappings=mappings)
+
+        mock_apply.assert_called_once_with("HR-EMP-00001", "Night", "Acme")
+
+    def test_rejects_cross_company_shift_when_no_ignore(self):
+        """Without any ignore flag, a cross-company shift type is still rejected."""
+        from zkteco_attendance.zkteco_attendance.api.endpoints import map_device_employees
+
+        def fake_get_value(doctype, name, field):
+            if doctype == "Employee":
+                return "Acme"       # employee matches the device company
+            if field == "company":
+                return "Other Co"   # shift type belongs to another company
+            return 0                # ignore_company_restriction off
+
+        mappings = [{"user_id": "100", "employee": "HR-EMP-00001",
+                     "shift_type": "Night"}]
+        with patch("frappe.get_doc", return_value=self._device()), \
+                patch("frappe.db.exists", return_value=True), \
+                patch("frappe.db.get_value", side_effect=fake_get_value), \
+                patch("frappe.get_all", return_value=[]), \
+                patch("frappe.db.set_value"), \
+                patch("frappe.db.commit"), \
+                self.assertRaises(frappe.ValidationError):
+            map_device_employees("Test-ZK-Device", mappings=mappings)
+
+    @patch("zkteco_attendance.zkteco_attendance.api.endpoints._apply_shift_assignment")
     def test_empty_shift_still_passed_for_unassign(self, mock_apply):
         """An explicit empty shift_type key unassigns the employee."""
         from zkteco_attendance.zkteco_attendance.api.endpoints import map_device_employees
@@ -313,6 +414,65 @@ class TestMapDeviceEmployeesShifts(unittest.TestCase):
 
         mock_apply.assert_called_once_with("HR-EMP-00001", "", "Acme")
         self.assertEqual(result["shifts_assigned"], 1)
+
+
+
+class TestApplyShiftAssignmentCompany(unittest.TestCase):
+    """_apply_shift_assignment handles company-less (ignore-restriction) devices."""
+
+    @patch("zkteco_attendance.zkteco_attendance.api.endpoints._get_active_shift_types",
+           return_value={})
+    def test_new_assignment_without_company_sets_ignore_flag(self, mock_shifts):
+        from zkteco_attendance.zkteco_attendance.api.endpoints import _apply_shift_assignment
+
+        sa_doc = MagicMock()
+        with patch("frappe.get_all", return_value=[]), \
+                patch("frappe.new_doc", return_value=sa_doc), \
+                patch("frappe.db.get_value", return_value={}), \
+                patch("frappe.get_doc"):
+            changed = _apply_shift_assignment("HR-EMP-00001", "Morning", None)
+
+        self.assertTrue(changed)
+        self.assertIsNone(sa_doc.company)
+        self.assertEqual(sa_doc.ignore_company_restriction, 1)
+        sa_doc.save.assert_called_once()
+
+    @patch("zkteco_attendance.zkteco_attendance.api.endpoints._get_active_shift_types",
+           return_value={})
+    def test_new_assignment_with_company_keeps_company(self, mock_shifts):
+        from zkteco_attendance.zkteco_attendance.api.endpoints import _apply_shift_assignment
+
+        sa_doc = MagicMock()
+        sa_doc.ignore_company_restriction = 0
+        with patch("frappe.get_all", return_value=[]), \
+                patch("frappe.new_doc", return_value=sa_doc), \
+                patch("frappe.db.get_value", return_value={}), \
+                patch("frappe.get_doc"):
+            changed = _apply_shift_assignment("HR-EMP-00001", "Morning", "Acme")
+
+        self.assertTrue(changed)
+        self.assertEqual(sa_doc.company, "Acme")
+        self.assertEqual(sa_doc.ignore_company_restriction, 0)
+
+    @patch("zkteco_attendance.zkteco_attendance.api.endpoints._get_active_shift_types",
+           return_value={})
+    def test_matches_assignment_of_same_empty_company(self, mock_shifts):
+        """A company-less device joins the company-less assignment of the shift."""
+        from zkteco_attendance.zkteco_attendance.api.endpoints import _apply_shift_assignment
+
+        existing = MagicMock()
+        with patch("frappe.get_all", return_value=[
+                frappe._dict({"name": "ZK-SA-0001", "company": "Acme"}),
+                frappe._dict({"name": "ZK-SA-0002", "company": None}),
+            ]), \
+                patch("frappe.get_doc", return_value=existing) as mock_get_doc, \
+                patch("frappe.new_doc") as mock_new_doc:
+            changed = _apply_shift_assignment("HR-EMP-00001", "Morning", None)
+
+        self.assertTrue(changed)
+        mock_get_doc.assert_called_once_with("ZK Shift Assignment", "ZK-SA-0002")
+        mock_new_doc.assert_not_called()
+        existing.save.assert_called_once()
 
 
 if __name__ == "__main__":

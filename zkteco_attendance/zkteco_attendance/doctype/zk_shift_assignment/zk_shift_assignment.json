@@ -6,6 +6,7 @@
     "field_order": [
         "shift_type",
         "company",
+        "ignore_company_restriction",
         "column_break_1",
         "status",
         "section_employees",
@@ -25,7 +26,14 @@
             "fieldtype": "Link",
             "label": "Company",
             "options": "Company",
-            "reqd": 1
+            "mandatory_depends_on": "eval:doc.ignore_company_restriction != 1"
+        },
+        {
+            "fieldname": "ignore_company_restriction",
+            "fieldtype": "Check",
+            "label": "Ignore Company Restriction",
+            "default": "0",
+            "description": "When enabled, the Company field becomes optional and employees of ANY company can be assigned to this shift assignment (the same-company restriction is skipped)."
         },
         {
             "fieldname": "column_break_1",
@@ -53,7 +61,7 @@
         }
     ],
     "links": [],
-    "modified": "2024-01-01 00:00:00.000000",
+    "modified": "2026-10-01 00:00:00.000000",
     "modified_by": "Administrator",
     "owner": "Administrator",
     "module": "Zkteco Attendance",

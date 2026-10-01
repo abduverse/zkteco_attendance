@@ -623,18 +623,19 @@ function showEmployeeMappingDialog(frm, res) {
 
         // Shift Type links only offer active shift types of the device's
         // company, so the dialog cannot put employees on another company's
-        // shift (the server applies the same rule).
+        // shift (the server applies the same rule). When the device has
+        // 'Ignore Company Restriction' enabled, all active shift types of
+        // every company are offered instead.
         $body.find(".zk-shift-link-target").each(function () {
             make_link_control(
                 $(this), "ZK Shift Type", "zk-shift-control", "zk_shift",
                 {
                     get_query() {
-                        return {
-                            filters: {
-                                company: frm.doc.company || "",
-                                is_active: 1,
-                            },
-                        };
+                        const filters = { is_active: 1 };
+                        if (!frm.doc.ignore_company_restriction) {
+                            filters.company = frm.doc.company || "";
+                        }
+                        return { filters };
                     },
                 }
             );
