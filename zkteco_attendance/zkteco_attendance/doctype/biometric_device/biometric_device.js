@@ -200,17 +200,15 @@ frappe.ui.form.on("Biometric Device", {
 
         // ── Render the final result (from the cached job result) ──────────
         const finishPull = (res) => {
-            cleanup();
-
             if (!res || !res.success) {
-                setProgress(100, __("Pull failed."));
-                $stage.removeClass("text-muted").addClass("text-danger");
-                $errors.show().text((res && res.error) || __("Unknown error"));
-                dialog.get_close_btn().show();
-                frm.reload_doc();
+                reportPullFailure(
+                    (res && res.error) ||
+                    __("The biometric device could not be reached. Check that it is powered on and reachable, then try again.")
+                );
                 return;
             }
 
+            cleanup();
             setProgress(100, __("Pull completed."));
             $counts.show();
             $body.find(".zkteco-cnt-total").text(res.total_records ?? 0);
@@ -355,6 +353,17 @@ frappe.ui.form.on("Biometric Device", {
             }
         };
 
+        const reportPullFailure = (message) => {
+            cleanup();
+            dialog.hide();
+            frappe.msgprint({
+                title: __("Pull Failed"),
+                indicator: "red",
+                message: frappe.utils.escape_html(message),
+            });
+            frm.reload_doc();
+        };
+
         // ── Queue the pull as a background job ─────────────────────────────
         // The sync runs in a background worker instead of inside this web
         // request, so gunicorn / reverse-proxy timeouts can no longer kill
@@ -366,21 +375,19 @@ frappe.ui.form.on("Biometric Device", {
             args: { device_name: frm.doc.name, run_id: run_id },
             callback(r) {
                 if (!r.message || !r.message.success) {
-                    cleanup();
-                    setProgress(100, __("Could not start the pull."));
-                    $stage.removeClass("text-muted").addClass("text-danger");
-                    dialog.get_close_btn().show();
+                    reportPullFailure(
+                        (r.message && r.message.error) || __("Could not start the pull.")
+                    );
                     return;
                 }
                 // Queued — the user may dismiss the dialog; the job keeps
                 // running and results also land in the Attendance Sync Log.
                 dialog.get_close_btn().show();
             },
-            error() {
-                cleanup();
-                setProgress(100, __("Could not start the pull."));
-                $stage.removeClass("text-muted").addClass("text-danger");
-                dialog.get_close_btn().show();
+            error(r) {
+                reportPullFailure(
+                    (r && r.message) || __("Could not start the pull.")
+                );
             },
         });
     },
