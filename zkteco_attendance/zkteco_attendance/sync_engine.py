@@ -259,6 +259,28 @@ def _result_cache_key(device_name, run_id):
     return "zkteco_pull_result:{}:{}".format(device_name, run_id)
 
 
+def _connection_error_message(err):
+    """
+    Return a friendly, actionable message for device-connection failures.
+    Connection errors raised by get_zk_connection surface as
+    frappe.ValidationError("Cannot connect to device ... Error: ..."), but
+    raw timeouts / network errors can also slip through — normalise them
+    all to a clear "device cannot be reached" wording for the user.
+    """
+    err_str = str(err)
+    lowered = err_str.lower()
+    if (
+        "cannot connect to device" in lowered
+        or "timed out" in lowered
+        or "timeout" in lowered
+        or "unreachable" in lowered
+        or "refused" in lowered
+        or "network" in lowered
+    ):
+        return _("Device cannot be reached. Check that it is powered on and connected to the network, then try again. ({0})").format(err_str)
+    return err_str
+
+
 def run_sync_job(device_name, triggered_by="Manual", user=None, run_id=None):
     """
     Background-job wrapper around sync_device.
@@ -281,8 +303,8 @@ def run_sync_job(device_name, triggered_by="Manual", user=None, run_id=None):
             pass
         return result
     except Exception as e:
-        err = str(e)
-        frappe.log_error(message="Sync job failed for device {}: {}".format(device_name, err),
+        err = _connection_error_message(str(e))
+        frappe.log_error(message="Sync job failed for device {}: {}".format(device_name, str(e)),
                          title="ZKTeco Sync Job Error")
         _emit_progress(device_name, user, "failed", message=err, run_id=run_id)
         payload = {"success": False, "error": err, "device": device_name, "run_id": run_id}
@@ -364,7 +386,7 @@ def sync_device(device_name, triggered_by="Manual", user=None, run_id=None):
     user = user or frappe.session.user
 
     if not device.enable:
-        _emit_progress(device_name, user, "error", message=_("Device is not enabled"), run_id=run_id)
+        _emit_progress(device_name, user, "failed", message=_("Device is not enabled"), run_id=run_id)
         return {"success": False, "error": "Device is not enabled"}
 
     sync_start = now_datetime()
@@ -387,13 +409,14 @@ def sync_device(device_name, triggered_by="Manual", user=None, run_id=None):
         )
         total_records = len(records)
     except Exception as e:
-        _emit_progress(device_name, user, "failed", message=str(e), run_id=run_id)
+        friendly = _connection_error_message(str(e))
+        _emit_progress(device_name, user, "failed", message=friendly, run_id=run_id)
         _save_sync_log(device=device_name, start_time=sync_start, end_time=now_datetime(),
                        total=0, created=0, dupes=0, failed=0, overtime=0, double_punches=0,
                        status="Failed", error=str(e), triggered_by=triggered_by)
         frappe.db.set_value("Biometric Device", device_name, "status", "Inactive")
         frappe.db.commit()
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly}
 
     # ── Step 1.5: "Sync Data After" date cutoff ────────────────────────────
     # When the device has a sync_data_after date set, punches strictly

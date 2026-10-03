@@ -39,6 +39,15 @@ def start_pull_checkins(device_name, run_id=None):
     if not device.enable:
         frappe.throw(_("Device {0} is not enabled. Please enable it first.").format(device_name))
 
+    # Pre-flight: is the device actually reachable? Without this the job is
+    # queued anyway and the dialog sits on "Starting..." until the worker
+    # eventually times out connecting to an offline device. A fast TCP probe
+    # here fails the pull immediately with a clear, actionable message.
+    from zkteco_attendance.zkteco_attendance.zk_client import check_device_reachable
+    reachable, reach_err = check_device_reachable(device)
+    if not reachable:
+        frappe.throw(reach_err)
+
     run_id = run_id or frappe.generate_hash(length=10)
 
     frappe.enqueue(

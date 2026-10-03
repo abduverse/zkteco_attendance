@@ -326,7 +326,7 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
             if (!res || !res.success) {
                 setProgress(100, __("Pull failed."));
                 $stage.removeClass("text-muted").addClass("text-danger");
-                $errors.show().text((res && res.error) || __("Unknown error"));
+                $errors.show().text((res && res.error) || __("Device cannot be reached. Check that it is powered on and connected to the network, then try again."));
                 dialog.get_close_btn().show();
                 return;
             }
@@ -432,11 +432,29 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
         }
 
         let poll_timer = null;
+        let settle_timer = null;
+        let settled = false;
         const stopPolling = () => {
             if (poll_timer) {
                 clearInterval(poll_timer);
                 poll_timer = null;
             }
+        };
+
+        // Watchdog: if the background job never produces any progress (no
+        // worker running / job dropped), settle the dialog with an
+        // explanation instead of sitting on "Starting..." forever.
+        const settleNotRunning = () => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            setProgress(100, __("Pull did not start — no progress received from the server."));
+            $stage.removeClass("text-muted").addClass("text-danger");
+            $errors.show().text(__(
+                "The background job produced no progress. Check that background workers are running " +
+                "(bench start / scheduler enabled), or check the Attendance Sync Log. " +
+                "If the device is unreachable, Test Connection will also fail."));
+            dialog.get_close_btn().show();
         };
         const poll = () => {
             if (!dialog.$wrapper.is(":visible")) {
@@ -447,18 +465,50 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                 args: { device_name: deviceName, run_id: run_id },
                 callback(r) {
                     if (!r || !r.message) return;
+                    // First payload received → job is alive, cancel the watchdog.
+                    if (poll_started && !first_payload_seen) {
+                        first_payload_seen = true;
+                        if (settle_timer) {
+                            clearTimeout(settle_timer);
+                            settle_timer = null;
+                        }
+                    }
                     handler(r.message);
                     // Background job finished — the payload carries the
                     // cached final result; finish the dialog from it.
-                    if (r.message.result && (r.message.stage === "done" || r.message.stage === "failed")) {
+                    if (r.message.stage === "failed" && r.message.result) {
+                        stopPolling();
+                        finishPull(r.message.result);
+                        return;
+                    }
+                    if (r.message.stage === "failed") {
+                        // Failed without a cached result (e.g. device
+                        // unreachable) — show the stage message directly.
+                        stopPolling();
+                        settled = true;
+                        cleanup();
+                        setProgress(100, __("Pull failed."));
+                        $stage.removeClass("text-muted").addClass("text-danger");
+                        $errors.show().text(r.message.message || __("Device cannot be reached. Check that it is powered on and connected to the network, then try again."));
+                        dialog.get_close_btn().show();
+                        return;
+                    }
+                    if (r.message.result && (r.message.stage === "done")) {
                         stopPolling();
                         finishPull(r.message.result);
                     }
                 },
             });
         };
+        let poll_started = false;
+        let first_payload_seen = false;
         poll_timer = setInterval(poll, 1500);
+        poll_started = true;
         poll();
+
+        // If nothing at all came back within 15s, the queued job likely
+        // never started (workers down) — tell the user instead of spinning.
+        settle_timer = setTimeout(settleNotRunning, 15000);
 
         const cleanup = () => {
             stopPolling();
@@ -490,10 +540,22 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                 // running and results also land in the Attendance Sync Log.
                 dialog.get_close_btn().show();
             },
-            error() {
+            error(r) {
+                // Server errors (frappe.throw) carry the message in
+                // r._server_messages — extract the readable text.
+                let server_msg = "";
+                try {
+                    const msgs = (r && r._server_messages) ? JSON.parse(r._server_messages) : [];
+                    if (msgs && msgs.length) {
+                        server_msg = JSON.parse(msgs[0]).message || "";
+                    }
+                } catch (e) { /* ignore */ }
                 cleanup();
-                setProgress(100, __("Could not start the pull."));
+                setProgress(100, server_msg || __("Device cannot be reached. Check that it is powered on and connected to the network, then try again."));
                 $stage.removeClass("text-muted").addClass("text-danger");
+                if (server_msg) {
+                    $errors.show().text(server_msg);
+                }
                 dialog.get_close_btn().show();
             },
         });

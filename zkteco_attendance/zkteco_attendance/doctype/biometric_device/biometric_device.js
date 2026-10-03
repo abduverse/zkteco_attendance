@@ -313,12 +313,31 @@ frappe.ui.form.on("Biometric Device", {
 
         // ── Poll fallback for progress (works without realtime) ──────────
         let poll_timer = null;
+        let settle_timer = null;
         const stopPolling = () => {
             if (poll_timer) {
                 clearInterval(poll_timer);
                 poll_timer = null;
             }
         };
+
+        // Watchdog: if the job never reports progress (no worker running,
+        // queue stalled, job silently dropped, etc.) the dialog would sit on
+        // "Starting..." forever. Settle it with an explanatory message
+        // instead — the pull itself can still land in the Sync Log.
+        const settleNotRunning = () => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            setProgress(100, __("Pull did not start — no progress received from the server."));
+            $stage.removeClass("text-muted").addClass("text-danger");
+            $errors.show().text(__(
+                "The background job produced no progress. Check that background workers are running " +
+                "(bench start / scheduler enabled), or check the Attendance Sync Log. " +
+                "If the device is unreachable, Test Connection will also fail."));
+            dialog.get_close_btn().show();
+        };
+        let settled = false;
         const poll = () => {
             // If the dialog was dismissed while the pull is still running,
             // stop polling (the background job keeps running server-side).
@@ -331,21 +350,53 @@ frappe.ui.form.on("Biometric Device", {
                 args: { device_name: frm.doc.name, run_id: run_id },
                 callback(r) {
                     if (!r || !r.message) return;
+                    // First payload received → job is alive, cancel the watchdog.
+                    if (poll_started && !first_payload_seen) {
+                        first_payload_seen = true;
+                        if (settle_timer) {
+                            clearTimeout(settle_timer);
+                            settle_timer = null;
+                        }
+                    }
                     handler(r.message);
                     // Background job finished — the payload carries the
                     // cached final result; finish the dialog from it.
                     if (r.message.result && (r.message.stage === "done" || r.message.stage === "failed")) {
                         stopPolling();
                         finishPull(r.message.result);
+                        return;
+                    }
+                    if (r.message.stage === "failed") {
+                        // Failed without a cached result (e.g. the device
+                        // could not be reached) — settle the dialog with
+                        // the stage message instead of polling forever.
+                        stopPolling();
+                        settled = true;
+                        cleanup();
+                        setProgress(100, r.message.message || __("Pull failed."));
+                        $stage.removeClass("text-muted").addClass("text-danger");
+                        $errors.show().text(r.message.message || __("Device cannot be reached. Check that it is powered on and connected to the network, then try again."));
+                        dialog.get_close_btn().show();
                     }
                 },
             });
         };
+        let poll_started = false;
+        let first_payload_seen = false;
         poll_timer = setInterval(poll, 1500);
+        poll_started = true;
         poll();  // poll immediately so the first stage shows without waiting
+
+        // If nothing at all came back within 15s, the queued job likely
+        // never started (workers down) — tell the user instead of spinning.
+        settle_timer = setTimeout(settleNotRunning, 15000);
 
         const cleanup = () => {
             stopPolling();
+            if (settle_timer) {
+                clearTimeout(settle_timer);
+                settle_timer = null;
+            }
             if (realtime_on) {
                 try {
                     frappe.realtime.off("zkteco_pull_progress", handler);
@@ -380,13 +431,27 @@ frappe.ui.form.on("Biometric Device", {
                     );
                     return;
                 }
+                if (r.message.error) {
+                    // Started but the server flagged a problem (e.g.
+                    // reachability warning) — surface it as a red toast.
+                    frappe.show_alert({ message: r.message.error, indicator: "red" }, 8);
+                }
                 // Queued — the user may dismiss the dialog; the job keeps
                 // running and results also land in the Attendance Sync Log.
                 dialog.get_close_btn().show();
             },
             error(r) {
+                // Server errors (frappe.throw, e.g. "Device cannot be
+                // reached...") carry the readable text in _server_messages.
+                let server_msg = "";
+                try {
+                    const msgs = (r && r._server_messages) ? JSON.parse(r._server_messages) : [];
+                    if (msgs && msgs.length) {
+                        server_msg = JSON.parse(msgs[0]).message || "";
+                    }
+                } catch (e) { /* ignore */ }
                 reportPullFailure(
-                    (r && r.message) || __("Could not start the pull.")
+                    server_msg || (r && r.message) || __("Could not start the pull.")
                 );
             },
         });

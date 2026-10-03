@@ -3,11 +3,49 @@ ZKTeco Device Client
 Wraps pyzk library with error handling, logging, and timezone support.
 """
 
+import socket
+
 import frappe
 from frappe import _
 from frappe.utils import now_datetime, get_datetime, cint
 import pytz
 from datetime import datetime, timedelta
+
+
+def check_device_reachable(device_doc, timeout=3):
+    """
+    Fast TCP reachability probe for a ZKTeco device.
+
+    Returns (True, "") when the device accepts a TCP connection on its
+    configured port, or (False, <friendly message>) when it does not. Used
+    as a pre-flight check before queueing a pull so an offline / unpingable
+    device fails immediately with a clear message instead of the dialog
+    sitting on "Starting..." while the background job hangs on connect
+    timeouts.
+    """
+    ip = (device_doc.device_ip or "").strip()
+    port = int(device_doc.port or 4370)
+
+    if not ip:
+        return False, _("Device {0} has no IP address configured.").format(
+            device_doc.device_name or device_doc.name)
+
+    try:
+        sock = socket.create_connection((ip, port), timeout=timeout)
+        sock.close()
+        return True, ""
+    except socket.timeout:
+        return False, _("Device cannot be reached. Check that {0} ({1}:{2}) is powered on and connected to the network, then try again.").format(
+            device_doc.device_name or device_doc.name, ip, port)
+    except (ConnectionRefusedError, ConnectionResetError):
+        return False, _("Device cannot be reached — the connection to {0} ({1}:{2}) was refused. Check the device port.").format(
+            device_doc.device_name or device_doc.name, ip, port)
+    except (OSError, socket.gaierror):
+        # Covers unreachable host / network / bad hostname etc.
+        return False, _("Device cannot be reached. Check that {0} ({1}:{2}) is powered on and connected to the network, then try again.").format(
+            device_doc.device_name or device_doc.name, ip, port)
+    except Exception as e:
+        return False, _("Device cannot be reached. Error: {0}").format(str(e))
 
 
 def get_zk_connection(device_doc):
