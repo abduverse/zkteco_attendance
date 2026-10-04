@@ -102,16 +102,33 @@ frappe.ui.form.on("Biometric Device", {
             callback(r) {
                 const res = r.message || {};
                 if (!res.success) {
-                    frappe.msgprint({
-                        title: __("Fetch Failed"),
-                        indicator: "red",
-                        message: res.error || __("Could not fetch users from the device."),
-                    });
+                    showFetchFailure(res.error);
                     return;
                 }
                 showEmployeeMappingDialog(frm, res);
             },
+            error(r) {
+                // A server-side exception (frappe.throw / an unexpected
+                // error) lands here instead of the callback. Surface its
+                // message so the dialog never closes without feedback.
+                let server_msg = "";
+                try {
+                    const msgs = (r && r._server_messages) ? JSON.parse(r._server_messages) : [];
+                    if (msgs && msgs.length) {
+                        server_msg = JSON.parse(msgs[0]).message || "";
+                    }
+                } catch (e) { /* ignore */ }
+                showFetchFailure(server_msg || (r && r.message));
+            },
         });
+
+        function showFetchFailure(message) {
+            frappe.msgprint({
+                title: __("Fetch Failed"),
+                indicator: "red",
+                message: message || __("Could not fetch users from the device."),
+            });
+        }
     },
 
     pull_checkins_with_progress(frm) {

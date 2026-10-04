@@ -16,9 +16,11 @@ import frappe
 class TestGetDeviceUsersEndpoint(unittest.TestCase):
     """get_device_users annotates device users with their mapped Employee."""
 
+    @patch("zkteco_attendance.zkteco_attendance.zk_client.check_device_reachable",
+           return_value=(True, ""))
     @patch("zkteco_attendance.zkteco_attendance.zk_client.get_zk_connection")
     @patch("frappe.get_all")
-    def test_annotates_users_with_mapped_employee(self, mock_get_all, mock_conn_fn):
+    def test_annotates_users_with_mapped_employee(self, mock_get_all, mock_conn_fn, mock_reachable):
         from zkteco_attendance.zkteco_attendance.api.endpoints import get_device_users
 
         mock_conn = MagicMock()
@@ -42,9 +44,11 @@ class TestGetDeviceUsersEndpoint(unittest.TestCase):
         self.assertEqual(user_row["employee"], "HR-EMP-00001")
         self.assertEqual(user_row["employee_name"], "Abebe Kebede")
 
+    @patch("zkteco_attendance.zkteco_attendance.zk_client.check_device_reachable",
+           return_value=(True, ""))
     @patch("zkteco_attendance.zkteco_attendance.zk_client.get_zk_connection")
     @patch("frappe.get_all")
-    def test_unmapped_users_have_empty_employee(self, mock_get_all, mock_conn_fn):
+    def test_unmapped_users_have_empty_employee(self, mock_get_all, mock_conn_fn, mock_reachable):
         from zkteco_attendance.zkteco_attendance.api.endpoints import get_device_users
 
         mock_conn = MagicMock()
@@ -61,11 +65,13 @@ class TestGetDeviceUsersEndpoint(unittest.TestCase):
         self.assertEqual(result["users"][0]["employee_name"], "")
         self.assertEqual(result["users"][0]["shift_type"], "")
 
+    @patch("zkteco_attendance.zkteco_attendance.zk_client.check_device_reachable",
+           return_value=(True, ""))
     @patch("zkteco_attendance.zkteco_attendance.zk_client.get_zk_connection")
     @patch("zkteco_attendance.zkteco_attendance.api.endpoints._get_active_shift_types")
     @patch("frappe.get_all")
     def test_mapped_user_annotated_with_current_shift_type(
-            self, mock_get_all, mock_shifts, mock_conn_fn):
+            self, mock_get_all, mock_shifts, mock_conn_fn, mock_reachable):
         from zkteco_attendance.zkteco_attendance.api.endpoints import get_device_users
 
         mock_conn = MagicMock()
@@ -86,6 +92,40 @@ class TestGetDeviceUsersEndpoint(unittest.TestCase):
             result = get_device_users("Test-ZK-Device")
 
         self.assertEqual(result["users"][0]["shift_type"], "Morning")
+
+    @patch("zkteco_attendance.zkteco_attendance.zk_client.check_device_reachable",
+           return_value=(False, "Device cannot be reached. Check that it is powered on and connected to the network, then try again."))
+    @patch("zkteco_attendance.zkteco_attendance.zk_client.get_device_users")
+    def test_unreachable_device_returns_structured_error(self, mock_fetch, mock_reachable):
+        """An offline device yields success=False + error so the dialog can
+        show a message instead of raising (which the JS callback cannot see)."""
+        from zkteco_attendance.zkteco_attendance.api.endpoints import get_device_users
+
+        with patch("frappe.get_doc", return_value=MagicMock()):
+            result = get_device_users("Test-ZK-Device")
+
+        self.assertFalse(result["success"])
+        self.assertIn("cannot be reached", result["error"])
+        self.assertEqual(result["users"], [])
+        # The device must not be contacted when the probe fails.
+        mock_fetch.assert_not_called()
+
+    @patch("zkteco_attendance.zkteco_attendance.zk_client.check_device_reachable",
+           return_value=(True, ""))
+    @patch("zkteco_attendance.zkteco_attendance.zk_client.get_device_users",
+           side_effect=frappe.ValidationError("Cannot connect to device Test-ZK-Device at 192.0.2.55:4370. Error: timed out"))
+    def test_fetch_error_returns_structured_error(self, mock_fetch, mock_reachable):
+        """A connection error raised while fetching is returned as data, not thrown."""
+        from zkteco_attendance.zkteco_attendance.api.endpoints import get_device_users
+
+        device = MagicMock()
+        device.device_name = "Test-ZK-Device"
+        with patch("frappe.get_doc", return_value=device):
+            result = get_device_users("Test-ZK-Device")
+
+        self.assertFalse(result["success"])
+        self.assertIn("Could not fetch users", result["error"])
+        self.assertEqual(result["count"], 0)
 
 
 class TestMapDeviceEmployeesEndpoint(unittest.TestCase):

@@ -240,14 +240,43 @@ def get_device_users(device_name):
     "Browse Employees On Device" dialog can show and edit the mapping.
     Each user also carries the shift_type of the employee's active ZK Shift
     Assignment (empty when unmapped or unassigned).
+
+    When the device cannot be reached (or fetching fails), returns
+    {"success": False, "error": <message>, "users": [], "count": 0} instead
+    of raising, so the form can display the reason to the user.
     """
     frappe.only_for(["System Manager", "HR Manager", "Biometric Device Manager"])
 
     device = frappe.get_doc("Biometric Device", device_name)
 
-    from zkteco_attendance.zkteco_attendance.zk_client import get_device_users as fetch_users
+    from zkteco_attendance.zkteco_attendance.zk_client import (
+        get_device_users as fetch_users,
+        check_device_reachable,
+    )
 
-    users = fetch_users(device_name)
+    # Pre-flight reachability probe. Without this a bare ValidationError is
+    # raised from the pyzk connection and the browser's frappe.call callback
+    # is never invoked, so the "Browse Employees On Device" dialog closes
+    # silently with no message. Returning a structured failure instead lets
+    # the JS show a clear "Fetch Failed" message.
+    reachable, reach_err = check_device_reachable(device)
+    if not reachable:
+        return {"success": False, "error": reach_err, "users": [], "count": 0}
+
+    try:
+        users = fetch_users(device_name)
+    except Exception as e:
+        # Surface any connection/fetch error (the device dropped off the
+        # network after the probe, wrong port/password, etc.) as data rather
+        # than an exception the client cannot render.
+        return {
+            "success": False,
+            "error": _("Could not fetch users from device {0}: {1}").format(
+                device.device_name or device.name, str(e)
+            ),
+            "users": [],
+            "count": 0,
+        }
 
     # Which device user_ids are already mapped to an Employee (of this
     # device's company) through attendance_device_id?
