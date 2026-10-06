@@ -13,6 +13,14 @@ from unittest.mock import patch, MagicMock, call
 import frappe
 
 
+class _FakeTemplate:
+    """Minimal stand-in for a pyzk Finger template object."""
+
+    def __init__(self, uid, valid=1):
+        self.uid = uid
+        self.valid = valid
+
+
 class TestGetDeviceUsersEndpoint(unittest.TestCase):
     """get_device_users annotates device users with their mapped Employee."""
 
@@ -92,6 +100,79 @@ class TestGetDeviceUsersEndpoint(unittest.TestCase):
             result = get_device_users("Test-ZK-Device")
 
         self.assertEqual(result["users"][0]["shift_type"], "Morning")
+
+    @patch("zkteco_attendance.zkteco_attendance.zk_client.check_device_reachable",
+           return_value=(True, ""))
+    @patch("zkteco_attendance.zkteco_attendance.zk_client.get_zk_connection")
+    @patch("frappe.get_all", return_value=[])
+    def test_users_carry_enrolled_punch_methods(self, mock_get_all, mock_conn_fn, mock_reachable):
+        """Fingerprint templates, password and card are summarised per user."""
+        from zkteco_attendance.zkteco_attendance.api.endpoints import get_device_users
+
+        mock_conn = MagicMock()
+        u1 = MagicMock(uid=1, user_id="100", name="A", privilege=0)
+        u1.password = "1234"
+        u1.card = 0
+        u2 = MagicMock(uid=2, user_id="200", name="B", privilege=0)
+        u2.password = ""
+        u2.card = 98765432
+        mock_conn.get_users.return_value = [u1, u2]
+        # uid 1 has two valid templates; uid 2 only an empty (invalid) slot.
+        mock_conn.get_templates.return_value = [
+            _FakeTemplate(1), _FakeTemplate(1), _FakeTemplate(2, valid=0),
+        ]
+        mock_conn_fn.return_value = (mock_conn, MagicMock())
+
+        with patch("frappe.get_doc", return_value=MagicMock()):
+            result = get_device_users("Test-ZK-Device")
+
+        self.assertEqual(result["users"][0]["punch_methods"], ["Fingerprint", "Password"])
+        self.assertEqual(result["users"][1]["punch_methods"], ["Card"])
+
+    @patch("zkteco_attendance.zkteco_attendance.zk_client.check_device_reachable",
+           return_value=(True, ""))
+    @patch("zkteco_attendance.zkteco_attendance.zk_client.get_zk_connection")
+    @patch("frappe.get_all", return_value=[])
+    def test_punch_methods_empty_when_nothing_enrolled(self, mock_get_all, mock_conn_fn, mock_reachable):
+        """A user with no fingerprint/password/card reports an empty list."""
+        from zkteco_attendance.zkteco_attendance.api.endpoints import get_device_users
+
+        mock_conn = MagicMock()
+        u = MagicMock(uid=5, user_id="500", name="C", privilege=0)
+        u.password = ""
+        u.card = 0
+        mock_conn.get_users.return_value = [u]
+        mock_conn.get_templates.return_value = []
+        mock_conn_fn.return_value = (mock_conn, MagicMock())
+
+        with patch("frappe.get_doc", return_value=MagicMock()):
+            result = get_device_users("Test-ZK-Device")
+
+        self.assertEqual(result["users"][0]["punch_methods"], [])
+
+    @patch("zkteco_attendance.zkteco_attendance.zk_client.check_device_reachable",
+           return_value=(True, ""))
+    @patch("zkteco_attendance.zkteco_attendance.zk_client.get_zk_connection")
+    @patch("frappe.get_all", return_value=[])
+    def test_template_read_failure_still_returns_users(self, mock_get_all, mock_conn_fn, mock_reachable):
+        """A failed template read leaves the fingerprint badge off but the
+        dialog still gets the users."""
+        from zkteco_attendance.zkteco_attendance.api.endpoints import get_device_users
+
+        mock_conn = MagicMock()
+        u = MagicMock(uid=1, user_id="100", name="A", privilege=0)
+        u.password = ""
+        u.card = 0
+        mock_conn.get_users.return_value = [u]
+        mock_conn.get_templates.side_effect = Exception("unsupported firmware")
+        mock_conn_fn.return_value = (mock_conn, MagicMock())
+
+        with patch("frappe.get_doc", return_value=MagicMock()), \
+                patch("frappe.log_error"):
+            result = get_device_users("Test-ZK-Device")
+
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["users"][0]["punch_methods"], [])
 
     @patch("zkteco_attendance.zkteco_attendance.zk_client.check_device_reachable",
            return_value=(False, "Device cannot be reached. Check that it is powered on and connected to the network, then try again."))
@@ -513,6 +594,90 @@ class TestApplyShiftAssignmentCompany(unittest.TestCase):
         mock_get_doc.assert_called_once_with("ZK Shift Assignment", "ZK-SA-0002")
         mock_new_doc.assert_not_called()
         existing.save.assert_called_once()
+
+
+class TestDeleteDeviceUserEndpoint(unittest.TestCase):
+    """delete_device_user removes a device user and clears its mapping."""
+
+    def _device(self, name="Test-ZK-Device"):
+        device = MagicMock()
+        device.name = name
+        device.device_name = "Test ZK Device"
+        return device
+
+    @patch("zkteco_attendance.zkteco_attendance.zk_client.check_device_reachable",
+           return_value=(True, ""))
+    @patch("zkteco_attendance.zkteco_attendance.zk_client.delete_device_user",
+           return_value=True)
+    @patch("frappe.get_all", return_value=[])
+    def test_deletes_user_and_reports_success(self, mock_get_all, mock_delete, mock_reachable):
+        from zkteco_attendance.zkteco_attendance.api.endpoints import delete_device_user
+
+        with patch("frappe.get_doc", return_value=self._device()):
+            result = delete_device_user("Test-ZK-Device", "100")
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["deleted"], "100")
+        self.assertEqual(result["unmapped"], 0)
+        mock_delete.assert_called_once_with("Test-ZK-Device", "100")
+
+    @patch("zkteco_attendance.zkteco_attendance.zk_client.check_device_reachable",
+           return_value=(False, "Device cannot be reached. Check that it is powered on and connected to the network, then try again."))
+    @patch("zkteco_attendance.zkteco_attendance.zk_client.delete_device_user")
+    def test_unreachable_device_returns_structured_error(self, mock_delete, mock_reachable):
+        """An offline device yields success=False + error without contacting it."""
+        from zkteco_attendance.zkteco_attendance.api.endpoints import delete_device_user
+
+        with patch("frappe.get_doc", return_value=self._device()):
+            result = delete_device_user("Test-ZK-Device", "100")
+
+        self.assertFalse(result["success"])
+        self.assertIn("cannot be reached", result["error"])
+        mock_delete.assert_not_called()
+
+    @patch("zkteco_attendance.zkteco_attendance.zk_client.check_device_reachable",
+           return_value=(True, ""))
+    @patch("zkteco_attendance.zkteco_attendance.zk_client.delete_device_user",
+           side_effect=frappe.ValidationError("User 100 was not found on device Test ZK Device."))
+    def test_delete_failure_returns_structured_error(self, mock_delete, mock_reachable):
+        """A device-side failure is returned as data, not raised."""
+        from zkteco_attendance.zkteco_attendance.api.endpoints import delete_device_user
+
+        with patch("frappe.get_doc", return_value=self._device()):
+            result = delete_device_user("Test-ZK-Device", "100")
+
+        self.assertFalse(result["success"])
+        self.assertIn("Could not delete user 100", result["error"])
+
+    @patch("zkteco_attendance.zkteco_attendance.zk_client.check_device_reachable",
+           return_value=(True, ""))
+    @patch("zkteco_attendance.zkteco_attendance.zk_client.delete_device_user",
+           return_value=True)
+    @patch("frappe.db.commit")
+    @patch("frappe.db.set_value")
+    @patch("frappe.get_all",
+           return_value=[frappe._dict({"name": "HR-EMP-00001"})])
+    def test_clears_mapped_employee(self, mock_get_all, mock_set_value, mock_commit,
+                                    mock_delete, mock_reachable):
+        """A mapped Employee's attendance_device_id is cleared on delete."""
+        from zkteco_attendance.zkteco_attendance.api.endpoints import delete_device_user
+
+        with patch("frappe.get_doc", return_value=self._device()):
+            result = delete_device_user("Test-ZK-Device", "100")
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["unmapped"], 1)
+        mock_set_value.assert_called_once_with(
+            "Employee", "HR-EMP-00001", "attendance_device_id", None,
+            update_modified=True,
+        )
+        mock_commit.assert_called_once()
+
+    def test_missing_user_id_is_rejected(self):
+        from zkteco_attendance.zkteco_attendance.api.endpoints import delete_device_user
+
+        with self.assertRaises(frappe.ValidationError):
+            delete_device_user("Test-ZK-Device", "")
 
 
 if __name__ == "__main__":

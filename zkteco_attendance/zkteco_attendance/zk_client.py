@@ -139,9 +139,59 @@ def test_device_connection(device_name):
     return result
 
 
+def _get_fingerprint_counts(conn):
+    """
+    Return {uid: number of enrolled fingerprint templates} for a connected
+    device by reading its stored templates once.
+
+    Best-effort: older firmwares and face-only devices may not store/return
+    fingerprints (or the read can fail), in which case an empty mapping is
+    returned and the affected users simply show no Fingerprint method.
+    """
+    try:
+        templates = list(conn.get_templates() or [])
+    except Exception as e:
+        frappe.log_error(
+            message=f"Could not read fingerprint templates: {str(e)}",
+            title="ZKTeco: Read Templates Failed",
+        )
+        return {}
+
+    counts = {}
+    for t in templates:
+        # valid == 0 marks an empty/unused template slot.
+        if not cint(getattr(t, "valid", 1)):
+            continue
+        uid = getattr(t, "uid", None)
+        if uid is None:
+            continue
+        counts[uid] = counts.get(uid, 0) + 1
+    return counts
+
+
+def _device_user_punch_methods(user, fingerprint_count=0):
+    """
+    Build the list of verification ("punch") methods enrolled for a device
+    user from the fields pyzk exposes: fingerprint templates (counted
+    separately), the numeric password and the RFID card number.
+
+    Face enrollment is not exposed by pyzk's public API, so it cannot be
+    reported here.
+    """
+    methods = []
+    if fingerprint_count:
+        methods.append("Fingerprint")
+    if str(getattr(user, "password", "") or "").strip():
+        methods.append("Password")
+    if cint(getattr(user, "card", 0) or 0):
+        methods.append("Card")
+    return methods
+
+
 def get_device_users(device_name):
     """
-    Fetch users enrolled on a ZKTeco device (uid, user_id, name, privilege).
+    Fetch users enrolled on a ZKTeco device (uid, user_id, name, privilege)
+    together with the verification ("punch") methods each user has enrolled.
     Called from the Biometric Device form's "Browse Employees On Device"
     dialog so users can be mapped to ERPNext Employees.
     """
@@ -151,6 +201,7 @@ def get_device_users(device_name):
     try:
         conn, zk = get_zk_connection(device)
         users = conn.get_users() or []
+        fingerprint_counts = _get_fingerprint_counts(conn)
 
         return [
             {
@@ -158,9 +209,41 @@ def get_device_users(device_name):
                 "user_id": str(u.user_id),
                 "name": (u.name or "").strip(),
                 "privilege": u.privilege,
+                "punch_methods": _device_user_punch_methods(
+                    u, fingerprint_counts.get(u.uid, 0)
+                ),
             }
             for u in users
         ]
+    finally:
+        if conn:
+            try:
+                conn.disconnect()
+            except Exception:
+                pass
+
+
+def delete_device_user(device_name, user_id):
+    """
+    Delete a user enrolled on a ZKTeco device, identified by their device
+    user_id (badge number). Called from the "Browse Employees On Device"
+    dialog's per-row Delete action.
+
+    Returns True on success. Raises when the device is unreachable, the user
+    is not found, or the device rejects the command.
+    """
+    device = frappe.get_doc("Biometric Device", device_name)
+
+    conn = None
+    try:
+        conn, zk = get_zk_connection(device)
+        deleted = conn.delete_user(user_id=str(user_id))
+        if deleted is False:
+            raise frappe.ValidationError(
+                _("User {0} was not found on device {1}.").format(
+                    user_id, device.device_name or device.name)
+            )
+        return True
     finally:
         if conn:
             try:

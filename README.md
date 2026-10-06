@@ -109,8 +109,9 @@ Employees:
   an enabled device.
 2. Open the device and choose **Browse Employees On Device** from
   **Actions**. The app connects to the device and lists each enrolled
-  user's **Device ID** and **Name On Device**, plus any current Employee
-  mapping.
+  user's **Device ID**, **Name On Device**, and the **Punch Methods**
+  enrolled for them (Fingerprint, Password and/or Card), plus any current
+  Employee mapping.
 3. Search by device ID or name if needed. Select the rows to update, choose
   an **Employee** for each, and optionally choose a **Shift Type**. The
   Employee must belong to the device's Company, unless the device has
@@ -121,6 +122,10 @@ Employees:
   Employee; a selected row with no Employee clears that device user's
   mapping. Choosing a Shift Type assigns the employee to that shift, while
   leaving Shift Type blank removes their current ZK Shift Assignment.
+5. To remove a user from the device, click the red **Delete** button on
+  their row and confirm. The user (and their enrolled biometrics) is
+  deleted from the device, and any Employee mapped to that device user is
+  unmapped automatically.
 
 You can also set **Biometric Device** and **Biometric Attendance ID**
 directly on each **Employee** record. The attendance ID must match the

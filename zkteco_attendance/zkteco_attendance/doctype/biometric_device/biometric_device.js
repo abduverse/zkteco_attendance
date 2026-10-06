@@ -477,12 +477,14 @@ frappe.ui.form.on("Biometric Device", {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Employee mapping dialog (file scope — not a form event handler)
-// Shows every user enrolled on the device with a checkbox, an Employee
-// Link control and a ZK Shift Type Link control per row; "Map Selected
-// Rows" writes attendance_device_id + zk_biometric_device onto the
-// Employees of the ticked rows only, and moves each employee into the
-// ZK Shift Assignment of the chosen shift type (empty shift = unassign).
-// A search box on top filters the fetched device users by ID or name.
+// Shows every user enrolled on the device with a checkbox, the verification
+// ("punch") methods enrolled for that user, an Employee Link control and a
+// ZK Shift Type Link control per row; "Map Selected Rows" writes
+// attendance_device_id + zk_biometric_device onto the Employees of the
+// ticked rows only, and moves each employee into the ZK Shift Assignment of
+// the chosen shift type (empty shift = unassign). Each row also has a
+// Delete button that removes that user from the device. A search box on top
+// filters the fetched device users by ID or name.
 // ─────────────────────────────────────────────────────────────────────────────
 function showEmployeeMappingDialog(frm, res) {
     const users = res.users || [];
@@ -564,6 +566,14 @@ function showEmployeeMappingDialog(frm, res) {
 
     const $body = dialog.fields_dict.mapping_html.$wrapper;
 
+    // Colour per enrolled verification method (badges in the Punch Methods
+    // column). Unknown methods fall back to a neutral grey badge.
+    const method_styles = {
+        "Fingerprint": "background:#dbeafe; color:#1e40af;",
+        "Password": "background:#ede9fe; color:#5b21b6;",
+        "Card": "background:#dcfce7; color:#166534;",
+    };
+
     const rows_html = users.map(u => {
         const badge = u.employee
             ? `<span class="label label-success" style="display:inline-block; padding:4px 9px; border-radius:999px; font-size:11px; font-weight:600; line-height:1.2;" title="${frappe.utils.escape_html(u.employee_name || u.employee)}">${__("Mapped")}</span>`
@@ -571,6 +581,13 @@ function showEmployeeMappingDialog(frm, res) {
         const emp_label_name = u.employee
             ? frappe.utils.escape_html(u.employee_name || u.employee)
             : "";
+        const methods = Array.isArray(u.punch_methods) ? u.punch_methods : [];
+        const methods_html = methods.length
+            ? methods.map(m => {
+                const style = method_styles[m] || "background:#e5e7eb; color:#374151;";
+                return `<span class="label" style="display:inline-block; padding:3px 9px; border-radius:999px; font-size:11px; font-weight:600; line-height:1.2; margin:1px 2px 1px 0; ${style}">${frappe.utils.escape_html(__(m))}</span>`;
+            }).join("")
+            : `<span class="text-muted">${__("None enrolled")}</span>`;
         return `
             <tr class="zk-emp-row" data-user-id="${frappe.utils.escape_html(u.user_id)}">
                 <td class="text-center" style="width:36px;">
@@ -579,7 +596,7 @@ function showEmployeeMappingDialog(frm, res) {
                 <td class="text-center" style="width:36px;">${badge}</td>
                 <td style="width:110px;"><b>${frappe.utils.escape_html(u.user_id)}</b></td>
                 <td>${frappe.utils.escape_html(u.name || "—")}</td>
-                
+                <td style="min-width:170px;">${methods_html}</td>
                 <td class="text-muted" style="width:160px;">${emp_label_name}</td>
                 <td style="min-width:240px;">
                     <div class="zk-emp-link-target"
@@ -590,6 +607,14 @@ function showEmployeeMappingDialog(frm, res) {
                     <div class="zk-shift-link-target"
                          data-user-id="${frappe.utils.escape_html(u.user_id)}"
                          data-current="${frappe.utils.escape_html(u.shift_type || "")}"></div>
+                </td>
+                <td class="text-center" style="width:60px;">
+                    <button type="button" class="btn btn-xs btn-danger zk-emp-delete"
+                            data-user-id="${frappe.utils.escape_html(u.user_id)}"
+                            data-user-name="${frappe.utils.escape_html(u.name || u.user_id)}"
+                            title="${__("Delete this user from the device")}">
+                        <i class="fa fa-trash"></i>
+                    </button>
                 </td>
             </tr>`;
     }).join("");
@@ -616,10 +641,11 @@ function showEmployeeMappingDialog(frm, res) {
                             <th style="width:90px;">${__("Status")}</th>
                             <th style="width:110px;">${__("Device ID")}</th>
                             <th>${__("Name On Device")}</th>
-                            
+                            <th style="min-width:170px;">${__("Punch Methods")}</th>
                             <th style="width:160px;">${__("Current Mapped Employee")}</th>
                             <th style="min-width:240px;">${__("Employee")}</th>
                             <th style="min-width:180px;">${__("Shift Type")}</th>
+                            <th class="text-center" style="width:60px;">${__("Delete")}</th>
                         </tr>
                     </thead>
                     <tbody>${rows_html}</tbody>
@@ -663,6 +689,66 @@ function showEmployeeMappingDialog(frm, res) {
             $(this).find(".zk-emp-select").prop("checked", checked);
         });
         syncSelectAllCheckbox();
+    });
+
+    // ── Delete a user from the device ───────────────────────────────────
+    $body.on("click", ".zk-emp-delete", function (e) {
+        e.preventDefault();
+        const $row = $(this).closest(".zk-emp-row");
+        const user_id = $(this).data("user-id");
+        const user_name = $(this).data("user-name") || user_id;
+
+        frappe.confirm(
+            __("Delete user <b>{0}</b> (device ID <b>{1}</b>) from <b>{2}</b>? Their enrolled biometrics and device access are removed, and any Employee mapped to this device user is unmapped.", [
+                frappe.utils.escape_html(user_name),
+                frappe.utils.escape_html(String(user_id)),
+                frappe.utils.escape_html(frm.doc.device_name || frm.doc.name),
+            ]),
+            function () {
+                frappe.call({
+                    method: "zkteco_attendance.zkteco_attendance.api.endpoints.delete_device_user",
+                    args: { device_name: frm.doc.name, user_id: user_id },
+                    freeze: true,
+                    freeze_message: __("Deleting user from device…"),
+                    callback(r) {
+                        const out = r.message || {};
+                        if (!out.success) {
+                            frappe.msgprint({
+                                title: __("Delete Failed"),
+                                indicator: "red",
+                                message: frappe.utils.escape_html(
+                                    out.error || __("Could not delete the user from the device.")
+                                ),
+                            });
+                            return;
+                        }
+                        $row.remove();
+                        syncSelectAllCheckbox();
+                        frappe.show_alert({
+                            message: __("Device user {0} deleted.", [user_id]),
+                            indicator: "green",
+                        }, 5);
+                    },
+                    error(r) {
+                        // frappe.throw lands here; surface the readable text.
+                        let server_msg = "";
+                        try {
+                            const msgs = (r && r._server_messages) ? JSON.parse(r._server_messages) : [];
+                            if (msgs && msgs.length) {
+                                server_msg = JSON.parse(msgs[0]).message || "";
+                            }
+                        } catch (e2) { /* ignore */ }
+                        frappe.msgprint({
+                            title: __("Delete Failed"),
+                            indicator: "red",
+                            message: frappe.utils.escape_html(
+                                server_msg || __("Could not delete the user from the device.")
+                            ),
+                        });
+                    },
+                });
+            }
+        );
     });
 
     // ── Mount a real Link control on every row (Employee + Shift Type) ──

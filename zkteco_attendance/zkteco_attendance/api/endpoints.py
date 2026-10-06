@@ -459,6 +459,72 @@ def map_device_employees(device_name, mappings):
 
 
 @frappe.whitelist()
+def delete_device_user(device_name, user_id):
+    """
+    Delete an enrolled user from a biometric device, called from the
+    "Browse Employees On Device" dialog's per-row Delete action.
+
+    After the device confirms the deletion, any Employee mapped to that
+    device user (attendance_device_id + zk_biometric_device) has its
+    attendance_device_id cleared, so no Employee keeps pointing at a user
+    that no longer exists on the device.
+
+    When the device cannot be reached (or the deletion fails), returns
+    {"success": False, "error": <message>} instead of raising, so the dialog
+    can show a clear reason.
+    """
+    frappe.only_for(["System Manager", "HR Manager", "Biometric Device Manager"])
+
+    user_id = str(user_id or "").strip()
+    if not user_id:
+        frappe.throw(_("A device user id is required."))
+
+    device = frappe.get_doc("Biometric Device", device_name)
+
+    from zkteco_attendance.zkteco_attendance.zk_client import (
+        delete_device_user as remove_user,
+        check_device_reachable,
+    )
+
+    # Same pre-flight as the fetch path: an offline device fails with a
+    # clear message instead of a bare connection exception.
+    reachable, reach_err = check_device_reachable(device)
+    if not reachable:
+        return {"success": False, "error": reach_err}
+
+    try:
+        remove_user(device_name, user_id)
+    except Exception as e:
+        return {
+            "success": False,
+            "error": _("Could not delete user {0} from device {1}: {2}").format(
+                user_id, device.device_name or device.name, str(e)
+            ),
+        }
+
+    # Clear the mapping so the Employee no longer references a user that is
+    # gone from the device.
+    unmapped = 0
+    stale = frappe.get_all(
+        "Employee",
+        filters={
+            "attendance_device_id": user_id,
+            "zk_biometric_device": device.name,
+        },
+        fields=["name"],
+    )
+    for row in stale:
+        frappe.db.set_value(
+            "Employee", row.name, "attendance_device_id", None, update_modified=True
+        )
+        unmapped += 1
+    if unmapped:
+        frappe.db.commit()
+
+    return {"success": True, "deleted": user_id, "unmapped": unmapped}
+
+
+@frappe.whitelist()
 def sync_device(device_name):
     """
     Trigger a background sync for a single device (legacy/queue-based path,
