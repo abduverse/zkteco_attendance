@@ -11,10 +11,14 @@ Request types:
 - "New": create one Employee Checkin (log_type IN/OUT) at the given time.
 - "Edit": update the existing check-in referenced by `checkin_name`.
 - "Make Present": create BOTH an IN and an OUT check-in for a day that has
-  no check-ins at all. Times come from the employee's shift for that date
-  (IN at shift start, OUT at shift end - a night shift's OUT rolls into the
-  next day); without a shift, IN is the entered time and OUT is entered
-  time + standard working hours. Log Type is not used and hidden.
+  no check-ins at all. The dialog asks for Start Time and End Time, both
+  prefilled from the employee's shift (start / end). The IN check-in is
+  created at Start Time and the OUT check-in at End Time; either time may
+  be left blank (kept for requests created before this field existed), in
+  which case the employee's shift is used as before - IN at shift start,
+  OUT at shift end (a night shift's OUT rolls into the next day), and
+  without a shift IN is the entered time and OUT is entered time + 8
+  standard working hours. Log Type is not used and hidden.
 """
 import json
 from datetime import timedelta
@@ -47,10 +51,15 @@ class ManualCheckinRequest(Document):
             frappe.throw(_("An Existing Check-in must be set when Request Type is Edit."))
 
         if self.request_type == "Make Present":
-            # Log Type / Is Overtime do not apply - IN and OUT are derived
-            # from the employee's shift for the day.
+            # Log Type / Is Overtime do not apply - the IN check-in is
+            # created at Start Time and the OUT at End Time.
             self.log_type = None
             self.is_overtime = 0
+            if self.get("requested_start_time") and self.get("requested_end_time") \
+                    and self.get("requested_end_time") == self.get("requested_start_time"):
+                frappe.throw(_(
+                    "Start Time and End Time must be different."
+                ))
             if self.checkin_name:
                 frappe.throw(_("Existing Check-in applies only to Edit requests."))
             # Make Present only works for a day that has no check-ins.
@@ -168,15 +177,30 @@ class ManualCheckinRequest(Document):
     def _get_make_present_times(self):
         """Return the (in_time, out_time) strings for a Make Present request.
 
-        Shift-based: IN at the employee's shift start and OUT at shift end
-        (a night shift's OUT rolls into the next day; Saturday Half Day ends
-        after the half-day hours). Without a shift, IN is the request's own
-        time and OUT is that time plus 8 standard working hours.
+        The dialog sends Start Time and End Time prefilled from the
+        employee's shift, so the requested times win whenever they are set.
+        A night-shift End Time that is not later than Start Time rolls into
+        the next day. When no requested times were saved (older requests,
+        or direct API calls) the times fall back to the employee's shift
+        for that date: IN at shift start, OUT at shift end. Without a
+        shift, IN is the request's own time and OUT is that time plus 8
+        standard working hours.
         """
         from zkteco_attendance.zkteco_attendance.attendance_processor import get_shift_for_employee
 
         date_str = str(self.checkin_date)
         entered_time = str(self.checkin_time or "08:00:00")
+
+        req_start = self.get("requested_start_time")
+        req_end = self.get("requested_end_time")
+        if req_start and req_end:
+            in_dt = get_datetime("{0} {1}".format(date_str, req_start))
+            out_dt = get_datetime("{0} {1}".format(date_str, req_end))
+            # End not later than Start (e.g. night shift 22:00 -> 06:00):
+            # the OUT lands on the next day.
+            if out_dt <= in_dt:
+                out_dt += timedelta(days=1)
+            return str(in_dt), str(out_dt)
 
         try:
             shift = get_shift_for_employee(self.employee, self.checkin_date) or None

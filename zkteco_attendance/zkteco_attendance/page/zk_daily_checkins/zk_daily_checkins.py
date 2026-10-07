@@ -33,11 +33,13 @@ def save_manual_checkin(attendance_summary=None, employee=None, checkin_time=Non
 @frappe.whitelist()
 def create_manual_checkin_request(employee=None, checkin_date=None, checkin_time=None,
                                   log_type=None, is_overtime=0, attendance_summary=None,
-                                  checkin_name=None, remarks=None, request_type=None):
+                                  checkin_name=None, remarks=None, request_type=None,
+                                  start_time=None, end_time=None):
     from zkteco_attendance.zkteco_attendance.api.endpoints import create_manual_checkin_request as _create
     return _create(employee=employee, checkin_date=checkin_date, checkin_time=checkin_time,
                    log_type=log_type, is_overtime=is_overtime, attendance_summary=attendance_summary,
-                   checkin_name=checkin_name, remarks=remarks, request_type=request_type)
+                   checkin_name=checkin_name, remarks=remarks, request_type=request_type,
+                   start_time=start_time, end_time=end_time)
 
 
 @frappe.whitelist()

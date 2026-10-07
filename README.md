@@ -14,6 +14,9 @@ and v16.
 Make sure the `pyzk2` Python library is available (a maintained fork of
 `pyzk`, used to talk to the device over the network):
 
+```bash
+pip install pyzk2
+```
 
 ```bash
 cd frappe-bench
@@ -186,11 +189,15 @@ page and applied via **Manual Checkin Request** documents on submit:
   the original values).
 - **Make Present** — offered beside Add only for a day that has **no
   check-ins at all**; it creates both an IN and an OUT check-in for the day.
-  Log Type is not used: IN is placed at the employee's shift start and OUT
-  at shift end (a night shift's OUT rolls into the next day); without a
-  shift, IN is the entered time and OUT is entered time + 8 hours. If any
-  check-in already exists for that day, the request is rejected with an
-  error. Cancelling a Make Present request deletes both check-ins.
+  Log Type is not used: the dialog asks for **Start Time** and **End
+  Time**, prefilled from the employee's shift (shift start / shift end).
+  The IN check-in is created at Start Time and the OUT at End Time (an End
+  Time not later than Start Time — e.g. a night shift — rolls into the next
+  day). Requests created before this field existed, or API calls that omit
+  the times, still fall back to the employee's shift, and without a shift
+  to the entered time + 8 hours. If any check-in already exists for that
+  day, the request is rejected with an error. Cancelling a Make Present
+  request deletes both check-ins.
 
 **Test Connection** can be run at any time to re-check connectivity without
 pulling data.

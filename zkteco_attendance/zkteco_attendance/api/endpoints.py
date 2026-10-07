@@ -834,14 +834,18 @@ def save_manual_checkin(attendance_summary=None, employee=None, checkin_time=Non
 @frappe.whitelist()
 def create_manual_checkin_request(employee=None, checkin_date=None, checkin_time=None,
                                   log_type="IN", is_overtime=0, attendance_summary=None,
-                                  checkin_name=None, remarks=None, request_type="New"):
+                                  checkin_name=None, remarks=None, request_type="New",
+                                  start_time=None, end_time=None):
     """
     Create a Manual Checkin Request (Draft) from the Daily Checkins page or
     the Attendance Summary "Add Check-in" button.
 
     request_type "Make Present" ignores log_type: submitting the request
-    creates IN and OUT checkins derived from the employee's shift, and is
-    only allowed for a day that has no checkins at all.
+    creates IN and OUT checkins, and is only allowed for a day that has no
+    checkins at all. The dialog sends Start Time / End Time prefilled from
+    the employee's shift; when given, the IN checkin is created at Start
+    Time and the OUT at End Time. When omitted (older clients, or direct
+    API calls), the times fall back to the employee's shift as before.
 
     The Employee Checkin is NOT touched here — it is only created or updated
     when the request document is submitted (see ManualCheckinRequest.on_submit).
@@ -858,8 +862,9 @@ def create_manual_checkin_request(employee=None, checkin_date=None, checkin_time
     if request_type == "Edit" and not checkin_name:
         frappe.throw(_("An Existing Check-in must be set when Request Type is Edit."))
     if request_type == "Make Present":
-        # Log Type does not apply - the IN and OUT checkins are derived from
-        # the employee's shift when the request is submitted.
+        # Log Type does not apply - the IN checkin is created at Start Time
+        # and the OUT at End Time (falls back to the employee's shift when
+        # the times are not provided).
         log_type = None
         is_overtime = 0
     elif log_type not in ("IN", "OUT"):
@@ -870,6 +875,8 @@ def create_manual_checkin_request(employee=None, checkin_date=None, checkin_time
         "employee": employee,
         "checkin_date": checkin_date,
         "checkin_time": checkin_time,
+        "requested_start_time": start_time or None,
+        "requested_end_time": end_time or None,
         "log_type": log_type,
         "is_overtime": cint(is_overtime),
         "attendance_summary": attendance_summary or None,

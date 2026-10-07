@@ -1130,6 +1130,17 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
         const defaultTime = time || "08:00:00";
         const isOT = is_overtime ? 1 : 0;
 
+        // Make Present Start/End Times default to the employee's shift
+        // (fetched below); before the shift response arrives, end time is
+        // start + 8 standard hours.
+        const plusHours = (hhmmss, hours) => {
+            const parts = String(hhmmss || "08:00:00").split(":");
+            const h = ((parseInt(parts[0], 10) || 0) + hours) % 24;
+            const pad = (n) => (n < 10 ? "0" + n : "" + n);
+            return pad(h) + ":" + (parts[1] || "00") + ":" + (parts[2] || "00");
+        };
+        const defaultEndTime = plusHours(defaultTime, 8);
+
         function get_shift_wrapper(dlg) {
             // Prefer fields_dict, fall back to direct DOM query
             if (dlg.fields_dict && dlg.fields_dict.shift_info && dlg.fields_dict.shift_info.$wrapper) {
@@ -1147,6 +1158,12 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                 callback(r) {
                     const $w = get_shift_wrapper(dlg);
                     if ($w && $w.length) render_shift_html($w, r.message);
+                    // Prefill the Make Present Start/End Times from the
+                    // employee's shift start/end for the selected date.
+                    if (r.message) {
+                        if (r.message.start_time) dlg.set_value("start_time", r.message.start_time);
+                        if (r.message.end_time) dlg.set_value("end_time", r.message.end_time);
+                    }
                 },
             });
         }
@@ -1165,11 +1182,17 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                 { fieldtype: "Select", fieldname: "request_type", label: __("Request Type"),
                   options: "New\nEdit\nMake Present",
                   default: mode === "edit" ? "Edit" : (isMakePresent ? "Make Present" : "New"), reqd: 1,
-                  description: __("Edit modifies the existing check-in; New adds one; Make Present creates IN and OUT checkins for a day that has none.") },
+                  description: __("Edit modifies the existing check-in; New adds one; Make Present creates IN and OUT checkins for a day that has none, at the Start Time / End Time below (prefilled from the shift).") },
                 { fieldtype: "Date", fieldname: "checkin_date", label: __("Date"),
                   default: date, reqd: 1 },
                 { fieldtype: "Time", fieldname: "checkin_time", label: __("Time"),
                   default: defaultTime, reqd: 1 },
+                { fieldtype: "Time", fieldname: "start_time", label: __("Start Time"),
+                  default: defaultTime,
+                  description: __("The IN check-in is created at this time. Defaults to the employee's shift start time.") },
+                { fieldtype: "Time", fieldname: "end_time", label: __("End Time"),
+                  default: defaultEndTime,
+                  description: __("The OUT check-in is created at this time. Defaults to the employee's shift end time.") },
                 { fieldtype: "Column Break", fieldname: "column_break_1" },
                 { fieldtype: "Select", fieldname: "log_type", label: __("Log Type"),
                   options: "IN\nOUT", default: logtype || "IN", reqd: 1 },
@@ -1185,10 +1208,21 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                     return;
                 }
                 const makePresent = (vals.request_type || "") === "Make Present";
+                if (makePresent) {
+                    if (!vals.start_time || !vals.end_time) {
+                        frappe.msgprint(__("Start Time and End Time are required for Make Present."));
+                        return;
+                    }
+                    if (vals.start_time === vals.end_time) {
+                        frappe.msgprint(__("Start Time and End Time must be different."));
+                        return;
+                    }
+                }
                 // Create a Manual Checkin Request instead of touching the
                 // checkin directly — the checkin is applied when the request
                 // document is submitted. Make Present requests carry no log
-                // type: IN and OUT are derived from the employee's shift.
+                // type: the IN checkin is created at Start Time and the OUT
+                // at End Time.
                 frappe.call({
                     method: "zkteco_attendance.zkteco_attendance.page.zk_daily_checkins.zk_daily_checkins.create_manual_checkin_request",
                     args: {
@@ -1200,6 +1234,8 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                         log_type:           makePresent ? null : vals.log_type,
                         checkin_name:       checkin_name || null,
                         is_overtime:        makePresent ? 0 : (vals.is_overtime ? 1 : 0),
+                        start_time:         makePresent ? vals.start_time : null,
+                        end_time:           makePresent ? vals.end_time : null,
                         remarks:            vals.zk_remark || null,
                     },
                     freeze: true,
@@ -1217,14 +1253,19 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                 });
             },
         });
-        // Make Present carries no log type: IN and OUT come from the
-        // employee's shift, so Log Type / Is Overtime are hidden whenever
-        // the Make Present request type is selected.
+        // Make Present carries no log type: the IN check-in is created at
+        // Start Time and the OUT at End Time, so Log Type / Is Overtime /
+        // Time are hidden and Start Time / End Time shown while the Make
+        // Present request type is selected.
         const toggle_make_present_fields = () => {
             const isMP = (d.get_value("request_type") || "") === "Make Present";
-            ["log_type", "is_overtime"].forEach((fname) => {
+            ["log_type", "is_overtime", "checkin_time"].forEach((fname) => {
                 const f = d.get_field(fname);
                 if (f && f.$wrapper) f.$wrapper.toggle(!isMP);
+            });
+            ["start_time", "end_time"].forEach((fname) => {
+                const f = d.get_field(fname);
+                if (f && f.$wrapper) f.$wrapper.toggle(isMP);
             });
         };
         d.fields_dict.request_type.$input.on("change", toggle_make_present_fields);
