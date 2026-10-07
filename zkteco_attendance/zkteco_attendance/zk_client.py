@@ -1,6 +1,7 @@
 """
 ZKTeco Device Client
-Wraps pyzk library with error handling, logging, and timezone support.
+Wraps the pyzk2 library (a maintained fork of pyzk, imported as `pyzk2`)
+with error handling, logging, and timezone support.
 """
 
 import socket
@@ -54,10 +55,10 @@ def get_zk_connection(device_doc):
     Returns a ZK instance (connected) or raises an exception.
     """
     try:
-        from zk import ZK, const
+        from pyzk2 import ZK, const
     except ImportError:
         frappe.throw(
-            _("pyzk library is not installed. Run: pip install pyzk"),
+            _("pyzk2 library is not installed. Run: pip install pyzk2"),
             title=_("Missing Dependency")
         )
 
@@ -172,10 +173,10 @@ def _get_fingerprint_counts(conn):
 def _device_user_punch_methods(user, fingerprint_count=0):
     """
     Build the list of verification ("punch") methods enrolled for a device
-    user from the fields pyzk exposes: fingerprint templates (counted
+    user from the fields pyzk2 exposes: fingerprint templates (counted
     separately), the numeric password and the RFID card number.
 
-    Face enrollment is not exposed by pyzk's public API, so it cannot be
+    Face enrollment is not exposed by pyzk2's public API, so it cannot be
     reported here.
     """
     methods = []

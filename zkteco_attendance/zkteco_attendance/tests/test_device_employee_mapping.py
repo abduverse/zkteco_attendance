@@ -3,14 +3,18 @@ Unit tests for the Biometric Device "Browse Employees On Device" feature:
 - get_device_users endpoint (fetch + annotate device users)
 - map_device_employees endpoint (persist attendance_device_id mapping)
 - shift_type handling in both endpoints (ZK Shift Assignment updates)
+- download_device_users_excel endpoint (dialog's Download Excel button)
 Run with: bench run-tests --app zkteco_attendance
 """
 
+import base64
 import json
 import unittest
+from io import BytesIO
 from unittest.mock import patch, MagicMock, call
 
 import frappe
+from openpyxl import load_workbook
 
 
 class _FakeTemplate:
@@ -678,6 +682,99 @@ class TestDeleteDeviceUserEndpoint(unittest.TestCase):
 
         with self.assertRaises(frappe.ValidationError):
             delete_device_user("Test-ZK-Device", "")
+
+
+class TestDownloadDeviceUsersExcel(unittest.TestCase):
+    """download_device_users_excel exports the dialog's fetched users as a workbook."""
+
+    def _device(self, name="Test-ZK-Device", device_name="Test ZK Device"):
+        device = MagicMock()
+        device.name = name
+        device.device_name = device_name
+        return device
+
+    def _users(self):
+        return [
+            {
+                "user_id": "100", "name": "Abebe Kebede",
+                "punch_methods": ["Fingerprint", "Password"],
+                "employee": "HR-EMP-00001", "employee_name": "Abebe Kebede",
+                "shift_type": "Morning",
+            },
+            {"user_id": "200", "name": "Unmapped User", "punch_methods": []},
+        ]
+
+    def _load(self, content):
+        return load_workbook(BytesIO(base64.b64decode(content)))
+
+    def test_returns_base64_workbook_matching_dialog_columns(self):
+        from zkteco_attendance.zkteco_attendance.api.endpoints import download_device_users_excel
+
+        with patch("frappe.get_doc", return_value=self._device()):
+            result = download_device_users_excel(
+                "Test-ZK-Device", users=json.dumps(self._users()))
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["filename"], "Device_Users_Test-ZK-Device.xlsx")
+
+        ws = self._load(result["content"]).active
+        self.assertEqual(ws.title, "Device Users")
+        self.assertEqual(ws["A1"].value, "Employees On Test ZK Device")
+        self.assertEqual(
+            [ws.cell(row=4, column=c).value for c in range(1, 8)],
+            ["Status", "Device ID", "Name On Device", "Punch Methods",
+             "Mapped Employee", "Employee Name", "Shift Type"],
+        )
+
+        # Mapped user row
+        self.assertEqual(ws.cell(row=5, column=1).value, "Mapped")
+        self.assertEqual(ws.cell(row=5, column=2).value, "100")
+        self.assertEqual(ws.cell(row=5, column=3).value, "Abebe Kebede")
+        self.assertEqual(ws.cell(row=5, column=4).value, "Fingerprint, Password")
+        self.assertEqual(ws.cell(row=5, column=5).value, "HR-EMP-00001")
+        self.assertEqual(ws.cell(row=5, column=7).value, "Morning")
+
+        # Unmapped user row
+        self.assertEqual(ws.cell(row=6, column=1).value, "Not mapped")
+        self.assertEqual(ws.cell(row=6, column=2).value, "200")
+        # No enrolled methods: openpyxl stores the empty string as an empty cell
+        self.assertIsNone(ws.cell(row=6, column=4).value)
+        self.assertIsNone(ws.cell(row=7, column=1).value)
+
+    def test_accepts_plain_list_payload(self):
+        from zkteco_attendance.zkteco_attendance.api.endpoints import download_device_users_excel
+
+        with patch("frappe.get_doc", return_value=self._device()):
+            result = download_device_users_excel("Test-ZK-Device", users=self._users())
+
+        self.assertTrue(result["success"])
+        self.assertEqual(self._load(result["content"]).active["B5"].value, "100")
+
+    def test_empty_users_produces_headers_only(self):
+        from zkteco_attendance.zkteco_attendance.api.endpoints import download_device_users_excel
+
+        with patch("frappe.get_doc", return_value=self._device()):
+            result = download_device_users_excel("Test-ZK-Device", users=[])
+
+        self.assertTrue(result["success"])
+        ws = self._load(result["content"]).active
+        self.assertEqual(ws["A4"].value, "Status")
+        self.assertIsNone(ws["A5"].value)
+
+    def test_rejects_invalid_json_payload(self):
+        from zkteco_attendance.zkteco_attendance.api.endpoints import download_device_users_excel
+
+        with patch("frappe.get_doc", return_value=self._device()), \
+                self.assertRaises(frappe.ValidationError):
+            download_device_users_excel("Test-ZK-Device", users="{bad json")
+
+    def test_rejects_non_list_payload(self):
+        from zkteco_attendance.zkteco_attendance.api.endpoints import download_device_users_excel
+
+        with patch("frappe.get_doc", return_value=self._device()), \
+                self.assertRaises(frappe.ValidationError):
+            download_device_users_excel(
+                "Test-ZK-Device", users=json.dumps({"user_id": "100"}))
 
 
 if __name__ == "__main__":

@@ -475,6 +475,29 @@ frappe.ui.form.on("Biometric Device", {
     },
 });
 
+// Save a base64-encoded workbook returned by a frappe.call response as a
+// real file download. Used by the "Browse Employees On Device" dialog's
+// Download Excel button, which receives the workbook as base64 JSON (so it
+// travels over a normal frappe.call POST instead of a binary response).
+function saveBase64Workbook(filename, base64) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename || "Device_Users.xlsx";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Employee mapping dialog (file scope — not a form event handler)
 // Shows every user enrolled on the device with a checkbox, the verification
@@ -669,6 +692,70 @@ function showEmployeeMappingDialog(frm, res) {
         });
         syncSelectAllCheckbox();
     }
+
+    // ── Download the fetched device users as an Excel workbook ──────────
+    // Exports the rows currently shown (the search box filters the list) as
+    // fetched from the device, so the workbook always matches what the user
+    // sees. The server builds the .xlsx and returns it base64-encoded.
+    dialog.add_custom_action(__("Download Excel"), function () {
+        const visible_ids = new Set();
+        $body.find(".zk-emp-row").filter(":visible").each(function () {
+            visible_ids.add(String($(this).data("user-id")));
+        });
+        const rows = users.filter(u => visible_ids.has(String(u.user_id)));
+
+        if (!rows.length) {
+            frappe.msgprint({
+                title: __("Nothing To Export"),
+                indicator: "orange",
+                message: __("No device users are shown with the current search. Clear the search box and try again."),
+            });
+            return;
+        }
+
+        frappe.call({
+            method: "zkteco_attendance.zkteco_attendance.api.endpoints.download_device_users_excel",
+            args: {
+                device_name: frm.doc.name,
+                users: JSON.stringify(rows),
+            },
+            freeze: true,
+            freeze_message: __("Preparing Excel download…"),
+            callback(r) {
+                const out = r.message || {};
+                if (!out.success || !out.content) {
+                    frappe.msgprint({
+                        title: __("Download Failed"),
+                        indicator: "red",
+                        message: __("Could not build the Excel file."),
+                    });
+                    return;
+                }
+                saveBase64Workbook(out.filename, out.content);
+                frappe.show_alert({
+                    message: __("{0} device user(s) exported.", [rows.length]),
+                    indicator: "green",
+                }, 5);
+            },
+            error(r) {
+                // frappe.throw lands here; surface the readable text.
+                let server_msg = "";
+                try {
+                    const msgs = (r && r._server_messages) ? JSON.parse(r._server_messages) : [];
+                    if (msgs && msgs.length) {
+                        server_msg = JSON.parse(msgs[0]).message || "";
+                    }
+                } catch (e) { /* ignore */ }
+                frappe.msgprint({
+                    title: __("Download Failed"),
+                    indicator: "red",
+                    message: frappe.utils.escape_html(
+                        server_msg || __("Could not build the Excel file.")
+                    ),
+                });
+            },
+        });
+    });
 
     // ── Row / select-all checkboxes (map only the selected rows) ────────
     function syncSelectAllCheckbox() {

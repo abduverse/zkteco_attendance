@@ -26,8 +26,8 @@ frappe.ui.form.on("Attendance Summary", {
                 frappe.confirm(
                     __("Process attendance for <b>{0}</b> employees from <b>{1}</b> to <b>{2}</b>? This will also calculate overtime where enabled on the shift.",
                         [processable,
-                        frappe.datetime.str_to_user(frm.doc.from_date),
-                        frappe.datetime.str_to_user(frm.doc.to_date)]),
+                            frappe.datetime.str_to_user(frm.doc.from_date),
+                            frappe.datetime.str_to_user(frm.doc.to_date)]),
                     function () {
                         frm.call({
                             doc: frm.doc,
@@ -86,8 +86,8 @@ frappe.ui.form.on("Attendance Summary", {
         // ── Overtime summary indicator ─────────────────────────────────────
         if (frm.doc.status === "Completed" && frm.doc.total_overtime_hours) {
             const parts = [
-                [__("Day"),     frm.doc.total_day_ot_hours],
-                [__("Night"),   frm.doc.total_night_ot_hours],
+                [__("Day"), frm.doc.total_day_ot_hours],
+                [__("Night"), frm.doc.total_night_ot_hours],
                 [__("Weekend"), frm.doc.total_weekend_ot_hours],
                 [__("Holiday"), frm.doc.total_holiday_ot_hours],
             ].filter(([, v]) => v).map(([k, v]) => `${k}: ${v} hrs`).join(" | ");
@@ -95,7 +95,7 @@ frappe.ui.form.on("Attendance Summary", {
             frm.dashboard.add_comment(
                 __("Total Overtime: <b>{0} hrs</b> across {1} employee(s).{2}",
                     [frm.doc.total_overtime_hours, frm.doc.total_employees || 0,
-                     parts ? `<br>${parts}` : ""]),
+                    parts ? `<br>${parts}` : ""]),
                 "orange",
                 true
             );
@@ -107,8 +107,8 @@ frappe.ui.form.on("Attendance Summary", {
             let d = frappe.datetime.str_to_obj(frm.doc.from_date);
             frm.set_value("year", d.getFullYear());
             frm.set_value("month", [
-                "January","February","March","April","May","June",
-                "July","August","September","October","November","December"
+                "January", "February", "March", "April", "May", "June",
+                "July", "August", "September", "October", "November", "December"
             ][d.getMonth()]);
 
             let last = new Date(d.getFullYear(), d.getMonth() + 1, 0);
@@ -334,11 +334,11 @@ frappe.ui.form.on("Attendance Summary", {
                 frappe.call({
                     method: "zkteco_attendance.zkteco_attendance.api.endpoints.create_manual_checkin_request",
                     args: {
-                        employee:           vals.employee,
-                        checkin_date:       vals.checkin_date,
-                        checkin_time:       vals.checkin_time,
-                        log_type:           vals.log_type,
-                        is_overtime:        vals.is_overtime ? 1 : 0,
+                        employee: vals.employee,
+                        checkin_date: vals.checkin_date,
+                        checkin_time: vals.checkin_time,
+                        log_type: vals.log_type,
+                        is_overtime: vals.is_overtime ? 1 : 0,
                         attendance_summary: frm.doc.name,
                     },
                     freeze: true,
@@ -370,9 +370,9 @@ frappe.ui.form.on("Attendance Summary", {
         const d = new frappe.ui.Dialog({
             title: __("Fetch Employees"),
             fields: [
-                { 
-                    label: __("Include Employees with only attendance id and biometric device"), 
-                    fieldname: "include_only_id_and_device", 
+                {
+                    label: __("Include Employees with only attendance id and biometric device"),
+                    fieldname: "include_only_id_and_device",
                     fieldtype: "Check",
                     default: 0,
                     description: __("If checked, employees without a biometric device or attendance device id will not fetched in the summary. Otherwise, they will be fetched and marked as 'Do Not Process'.")
@@ -443,7 +443,17 @@ frappe.ui.form.on("Attendance Summary", {
                         const existing = new Set((frm.doc.details || []).map(row => row.employee));
                         let added = 0;
 
-                        const working_days = frappe.datetime.get_diff(frm.doc.to_date, frm.doc.from_date) + 1;
+                        // Calculate working days between from_date and to_date exclude weekends
+                        // const working_days = frappe.datetime.get_diff(frm.doc.to_date, frm.doc.from_date) + 1;
+                        let working_days = 0;
+                        const current_date = frappe.datetime.str_to_obj(frm.doc.from_date);
+                        const end_date = frappe.datetime.str_to_obj(frm.doc.to_date);
+                        while (current_date <= end_date) {
+                            if (current_date.getDay() !== 0) { // Exclude Sundays
+                                working_days++;
+                            }
+                            current_date.setDate(current_date.getDate() + 1);
+                        }
 
                         emps.forEach(emp => {
                             // is zk_biometric_device and attendance_device_id are empty
@@ -454,7 +464,7 @@ frappe.ui.form.on("Attendance Summary", {
                                     department: emp.department,
                                     designation: emp.designation,
                                     do_not_process: emp.zk_biometric_device && emp.attendance_device_id ? 0 : 1,
-                                    working_days: emp.zk_biometric_device && emp.attendance_device_id ? working_days : 0,
+                                    working_days: emp.zk_biometric_device && emp.attendance_device_id ? 0 : working_days,
                                 });
                                 existing.add(emp.name);
                                 added++;

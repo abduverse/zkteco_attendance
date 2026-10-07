@@ -11,8 +11,8 @@ and v16.
 
 ### 1.1 Fresh install
 
-Make sure the `pyzk` Python library is available (used to talk to the
-device over the network):
+Make sure the `pyzk2` Python library is available (a maintained fork of
+`pyzk`, used to talk to the device over the network):
 
 
 ```bash
@@ -117,12 +117,16 @@ Employees:
   Employee must belong to the device's Company, unless the device has
   **Ignore Company Restriction** enabled — then employees and shift types
   of any company (or none) are accepted.
-4. Click **Map Selected Rows**. Only selected rows are changed. The mapping
+4. Click **Download Excel** to save the listed users as an `.xlsx` workbook
+  (Status, Device ID, Name On Device, Punch Methods, and their current
+  Employee / Shift Type). The export honours the search box, so only the
+  users currently shown are written to the file.
+5. Click **Map Selected Rows**. Only selected rows are changed. The mapping
   fills in **Biometric Device** and **Biometric Attendance ID** on each
   Employee; a selected row with no Employee clears that device user's
   mapping. Choosing a Shift Type assigns the employee to that shift, while
   leaving Shift Type blank removes their current ZK Shift Assignment.
-5. To remove a user from the device, click the red **Delete** button on
+6. To remove a user from the device, click the red **Delete** button on
   their row and confirm. The user (and their enrolled biometrics) is
   deleted from the device, and any Employee mapped to that device user is
   unmapped automatically.
