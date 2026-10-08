@@ -1130,16 +1130,24 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
         const defaultTime = time || "08:00:00";
         const isOT = is_overtime ? 1 : 0;
 
+        const padTimePart = (value) => (value < 10 ? "0" + value : String(value));
+
         // Make Present Start/End Times default to the employee's shift
         // (fetched below); before the shift response arrives, end time is
         // start + 8 standard hours.
+        const normalize_time = (hhmmss) => {
+            const parts = String(hhmmss || "00:00:00").split(":");
+            const hours = padTimePart(parseInt(parts[0], 10) || 0);
+            const minutes = padTimePart(parseInt(parts[1], 10) || 0);
+            const seconds = padTimePart(parseInt(parts[2], 10) || 0);
+            return hours + ":" + minutes + ":" + seconds;
+        };
         const plusHours = (hhmmss, hours) => {
             const parts = String(hhmmss || "08:00:00").split(":");
             const h = ((parseInt(parts[0], 10) || 0) + hours) % 24;
-            const pad = (n) => (n < 10 ? "0" + n : "" + n);
-            return pad(h) + ":" + (parts[1] || "00") + ":" + (parts[2] || "00");
+            return padTimePart(h) + ":" + (parts[1] || "00") + ":" + (parts[2] || "00");
         };
-        const defaultEndTime = plusHours(defaultTime, 8);
+        const defaultEndTime = normalize_time(plusHours(defaultTime, 8));
 
         function get_shift_wrapper(dlg) {
             // Prefer fields_dict, fall back to direct DOM query
@@ -1161,8 +1169,8 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                     // Prefill the Make Present Start/End Times from the
                     // employee's shift start/end for the selected date.
                     if (r.message) {
-                        if (r.message.start_time) dlg.set_value("start_time", r.message.start_time);
-                        if (r.message.end_time) dlg.set_value("end_time", r.message.end_time);
+                        if (r.message.start_time) dlg.set_value("start_time", normalize_time(plusHours(r.message.start_time, 8)));
+                        if (r.message.end_time) dlg.set_value("end_time", normalize_time(plusHours(r.message.end_time, 8)));
                     }
                 },
             });
