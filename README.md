@@ -11,11 +11,11 @@ and v16.
 
 ### 1.1 Fresh install
 
-Make sure the `pyzk2` Python library is available (a maintained fork of
-`pyzk`, used to talk to the device over the network):
+Make sure the `pyzk` Python library is available (used to talk to the
+device over the network):
 
 ```bash
-pip install pyzk2
+pip install pyzk
 ```
 
 ```bash
