@@ -9,8 +9,11 @@ configured sync_frequency.
 
 import frappe
 from frappe.utils import now_datetime, time_diff_in_seconds
-from zkteco_attendance.zkteco_attendance.sync_engine import sync_all_active_devices
-
+from zkteco_attendance.zkteco_attendance.sync_engine import (
+    _get_cache,
+    _sync_lock_key,
+    sync_all_active_devices,
+)
 # Minimum elapsed seconds before we re-sync, keyed by sync_frequency label
 FREQUENCY_SECONDS = {
     "5 Min":  5  * 60,
@@ -51,9 +54,32 @@ def sync_devices_on_schedule():
             if freq in ("Hourly", "Daily"):
                 continue
 
+            # Skip if another sync of this device is already running — the
+            # sync lock in Redis is set for the whole duration of a pull, so
+            # there is no point enqueueing a job that sync_device would
+            # immediately refuse.
             try:
-                from zkteco_attendance.zkteco_attendance.sync_engine import sync_device
-                sync_device(device["name"], triggered_by="Scheduler")
+                if _get_cache().get_value(_sync_lock_key(device["name"])):
+                    continue
+            except Exception:
+                pass  # cache unavailable — proceed and let sync_device decide
+
+            try:
+                from zkteco_attendance.zkteco_attendance.sync_engine import run_sync_job
+                # Run as a background job with an explicit generous timeout.
+                # Calling sync_device directly here inherits the scheduler
+                # job's own 300s RQ timeout, which kills a large pull
+                # mid-checkin-creation with "Task exceeded maximum timeout
+                # value (300 seconds)".
+                frappe.enqueue(
+                    "zkteco_attendance.zkteco_attendance.sync_engine.run_sync_job",
+                    device_name=device["name"],
+                    triggered_by="Scheduler",
+                    user=None,
+                    queue="long",
+                    timeout=3600,
+                    job_name="zkteco_schedule_sync_{}".format(device["name"]),
+                )
             except Exception as e:
                 frappe.log_error(
                     message="ZKTeco scheduler failed for device {}: {}".format(device["name"], str(e)),

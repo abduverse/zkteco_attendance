@@ -495,6 +495,44 @@ class TestNightShiftCrossMidnight(unittest.TestCase):
         self.assertEqual(len(day1), 2)
         self.assertEqual(day1[1]["time"], datetime(2026, 1, 2, 6, 30))
 
+    def test_late_out_after_shift_end_stays_on_shift_start_day(self):
+        """22:00 -> 01:00 shift: a 01:11 OUT (past the 01:00 end) belongs to 01/02.
+
+        Regression guard: attribution must follow the shift START, so a
+        checkout later than the shift's end time is not treated as the first
+        punch of the next calendar day.  Log types are the ones the sync
+        engine now stores for this shift (see
+        test_sync_engine.test_late_out_past_night_shift_end_stays_on_start_day).
+        """
+        from zkteco_attendance.zkteco_attendance.attendance_processor import (
+            group_checkins_by_date,
+        )
+
+        shift = _day_shift(is_night_shift=1, start_time="22:00:00",
+                           end_time="01:00:00")
+        checkins = [
+            _mk_checkin("C1", "2026-02-01 22:12:01", "IN"),
+            _mk_checkin("C2", "2026-02-02 01:11:00", "OUT"),
+            _mk_checkin("C3", "2026-02-02 22:05:00", "IN"),
+        ]
+
+        daily = group_checkins_by_date(
+            checkins, shift,
+            from_date=date(2026, 2, 1), to_date=date(2026, 2, 2),
+        )
+
+        day1 = sorted(daily[date(2026, 2, 1)], key=lambda c: c["time"])
+        self.assertEqual(len(day1), 2)
+        self.assertEqual([c["time"] for c in day1],
+                         [datetime(2026, 2, 1, 22, 12, 1),
+                          datetime(2026, 2, 2, 1, 11)])
+        self.assertEqual([c["log_type"] for c in day1], ["IN", "OUT"])
+
+        # 02/02 holds only its own night-shift IN — no orphaned OUT.
+        day2 = daily[date(2026, 2, 2)]
+        self.assertEqual(len(day2), 1)
+        self.assertEqual(day2[0]["log_type"], "IN")
+
     def test_night_shift_grace_period(self):
         """Late entry and early exit grace are computed across midnight."""
         from zkteco_attendance.zkteco_attendance.attendance_processor import classify_day
@@ -839,6 +877,128 @@ class TestSaturdayHalfDayMode(unittest.TestCase):
         # 5h worked ≥ 4h saturday_half_day_hours → Present
         self.assertEqual(result["working_days"], 1.0)
         self.assertAlmostEqual(result["total_working_hours"], 5.0, places=2)
+
+
+class TestSaturdayOvertimeSettings(unittest.TestCase):
+    """Saturday Half Day overtime must obey the shift's overtime settings
+    exactly like any other working day: with overtime disabled there is no
+    OT at all, and with the 'OT Punches Only' method only explicit OT
+    punches count — the hours-based Saturday OT is never awarded on its own.
+    """
+
+    def test_saturday_half_day_overtime_disabled_has_no_ot(self):
+        """10h worked on Saturday Half Day with overtime disabled → no OT."""
+        from zkteco_attendance.zkteco_attendance.attendance_processor import classify_day
+
+        shift = _day_shift(
+            saturday_mode="Half Day",
+            saturday_half_day_hours=4,
+            enable_overtime=0,
+        )
+        checkins = [
+            _mk_checkin("C1", "2026-08-15 08:00:00", "IN"),
+            _mk_checkin("C2", "2026-08-15 18:00:00", "OUT"),
+        ]
+        result = classify_day(checkins, shift, "Mark as Invalid",
+                              is_saturday=True,
+                              work_date=date(2026, 8, 15))
+
+        self.assertEqual(result["status"], "Present")
+        self.assertAlmostEqual(result["hours"], 10.0, places=2)
+        self.assertAlmostEqual(result["overtime_hours"], 0.0, places=2)
+        self.assertAlmostEqual(result["day_ot_hours"], 0.0, places=2)
+        self.assertAlmostEqual(result["night_ot_hours"], 0.0, places=2)
+        self.assertAlmostEqual(result["weekend_ot_hours"], 0.0, places=2)
+        self.assertAlmostEqual(result["holiday_ot_hours"], 0.0, places=2)
+
+    def test_saturday_half_day_ot_punches_only_ignores_hours_based_ot(self):
+        """OT Punches Only with no OT punch → 0 OT, not 10h - 4h."""
+        from zkteco_attendance.zkteco_attendance.attendance_processor import classify_day
+
+        shift = _day_shift(
+            saturday_mode="Half Day",
+            saturday_half_day_hours=4,
+            enable_overtime=1,
+            overtime_calculation_method="OT Punches Only",
+        )
+        checkins = [
+            _mk_checkin("C1", "2026-08-15 08:00:00", "IN"),
+            _mk_checkin("C2", "2026-08-15 18:00:00", "OUT"),
+        ]
+        result = classify_day(checkins, shift, "Mark as Invalid",
+                              is_saturday=True,
+                              work_date=date(2026, 8, 15))
+
+        self.assertEqual(result["status"], "Present")
+        self.assertAlmostEqual(result["overtime_hours"], 0.0, places=2)
+        self.assertAlmostEqual(result["day_ot_hours"], 0.0, places=2)
+
+    def test_saturday_half_day_ot_punches_only_matches_other_days(self):
+        """The same punches and settings give the same OT on Saturday
+        (Half Day) as on a regular working day."""
+        from zkteco_attendance.zkteco_attendance.attendance_processor import classify_day
+
+        shift = _day_shift(
+            saturday_mode="Half Day",
+            saturday_half_day_hours=4,
+            working_hours_method="Actual Pairs (IN-OUT)",
+            enable_overtime=1,
+            overtime_calculation_method="OT Punches Only",
+        )
+
+        def _punches(day):
+            ot_in = _mk_checkin("C3", "{0} 14:00:00".format(day), "IN")
+            ot_in["is_overtime"] = True
+            ot_out = _mk_checkin("C4", "{0} 18:00:00".format(day), "OUT")
+            ot_out["is_overtime"] = True
+            return [
+                _mk_checkin("C1", "{0} 08:00:00".format(day), "IN"),
+                _mk_checkin("C2", "{0} 12:00:00".format(day), "OUT"),
+                ot_in,
+                ot_out,
+            ]
+
+        # 2026-08-15 is Saturday, 2026-08-17 is the following Monday
+        saturday = classify_day(_punches("2026-08-15"), shift, "Mark as Invalid",
+                                is_saturday=True,
+                                work_date=date(2026, 8, 15))
+        monday = classify_day(_punches("2026-08-17"), shift, "Mark as Invalid",
+                              is_saturday=False,
+                              work_date=date(2026, 8, 17))
+
+        self.assertAlmostEqual(saturday["overtime_hours"], 4.0, places=2)
+        self.assertAlmostEqual(saturday["overtime_hours"], monday["overtime_hours"], places=2)
+        self.assertAlmostEqual(saturday["day_ot_hours"], monday["day_ot_hours"], places=2)
+
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_holidays_in_range")
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_shift_for_employee")
+    def test_process_employee_saturday_ot_disabled_totals_zero(self, mock_shift, mock_holidays):
+        """process_employee rolls up 0 Saturday OT when overtime is disabled."""
+        from zkteco_attendance.zkteco_attendance.attendance_processor import process_employee
+
+        mock_shift.return_value = _day_shift(
+            saturday_mode="Half Day",
+            saturday_half_day_hours=4,
+            enable_overtime=0,
+        )
+        mock_holidays.return_value = {}
+
+        checkins = [
+            _mk_checkin("C1", "2026-08-15 08:00:00", "IN"),
+            _mk_checkin("C2", "2026-08-15 18:00:00", "OUT"),
+        ]
+        result = process_employee(
+            employee="HR-EMP-00001",
+            from_date="2026-08-15",
+            to_date="2026-08-15",
+            checkin_list=checkins,
+            default_shift_name=None,
+            doc_missing_action="Mark as Invalid",
+        )
+
+        self.assertEqual(result["working_days"], 1.0)
+        self.assertAlmostEqual(result["overtime_hours"], 0.0, places=2)
+        self.assertAlmostEqual(result["day_ot_hours"], 0.0, places=2)
 
 
 class TestStatusClassification(unittest.TestCase):

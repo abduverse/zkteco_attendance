@@ -66,6 +66,53 @@ class TestSyncEngine(unittest.TestCase):
         result = checkin_exists("HR-EMP-00001", ts, "Test-ZK-Device")
         self.assertFalse(result)
 
+    def test_device_sync_lock_is_exclusive_and_released(self):
+        """
+        Only one sync per device may run at a time. A second acquire while
+        the first holds the lock must fail, and the lock must be free again
+        once released (otherwise the device would stay un-syncable until the
+        TTL expires).
+        """
+        from zkteco_attendance.zkteco_attendance import sync_engine
+
+        device = "Test-ZK-Lock-Device"
+        token = sync_engine.acquire_device_sync_lock(device)
+        self.assertTrue(token)
+        try:
+            self.assertIsNone(sync_engine.acquire_device_sync_lock(device))
+        finally:
+            sync_engine.release_device_sync_lock(device, token)
+
+        again = sync_engine.acquire_device_sync_lock(device)
+        self.assertTrue(again)
+        sync_engine.release_device_sync_lock(device, again)
+
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine._sync_device_locked")
+    def test_second_sync_of_same_device_is_refused(self, mock_locked):
+        """
+        While a sync holds a device's lock, a second sync of that device
+        returns a clear failure instead of running the pull again — the
+        overlap that made the scheduler re-pull the same logs every minute
+        and leaked its (untagged) progress into a live dialog.
+        """
+        from zkteco_attendance.zkteco_attendance import sync_engine
+
+        mock_locked.return_value = {"success": True}
+
+        with patch.object(sync_engine, "acquire_device_sync_lock",
+                          side_effect=["token-1", None]):
+            first = sync_engine.sync_device("Test-ZK-Device", triggered_by="Test",
+                                            user="Administrator")
+            second = sync_engine.sync_device("Test-ZK-Device", triggered_by="Test",
+                                             user="Administrator")
+
+        self.assertTrue(first["success"])
+        self.assertFalse(second["success"])
+        self.assertTrue(second["already_running"])
+        self.assertIn("already running", second["error"])
+        # The pull itself must have run exactly once.
+        mock_locked.assert_called_once()
+
     @patch("zkteco_attendance.zkteco_attendance.sync_engine._save_sync_log")
     @patch("zkteco_attendance.zkteco_attendance.sync_engine.create_employee_checkin")
     @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_existing_checkins")
@@ -390,6 +437,51 @@ class TestSyncEngine(unittest.TestCase):
         for att_date, expected in [("2026-01-01", ["IN", "OUT"]), ("2026-01-02", ["IN", "OUT"])]:
             day_recs = sorted(grouped[("100", getdate(att_date))], key=lambda r: r["timestamp"])
             self.assertEqual(resolve_log_types_for_day(day_recs), expected)
+
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_employee_by_biometric_id")
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_shift_for_employee")
+    def test_late_out_past_night_shift_end_stays_on_start_day(self, mock_shift, mock_emp):
+        """
+        22:00 -> 01:00 night shift: a 22:12:01 IN on 01/02 and a 01:11:00 OUT
+        on 02/02 (11 minutes PAST the 01:00 shift end) must both belong to
+        01/02 and be saved as IN and OUT — not split so the OUT becomes the
+        first IN of 02/02.  Regression guard: the old rule rolled a punch back
+        only when it was at/before the shift end time, so any late checkout
+        past midnight was mislabelled and shifted every later day's punches
+        by one slot.
+        """
+        from zkteco_attendance.zkteco_attendance.sync_engine import (
+            group_records_by_attendance_date,
+            resolve_log_types_for_day,
+        )
+
+        mock_emp.return_value = {"name": "HR-EMP-00001", "employee_name": "Test", "company": "Acme"}
+        mock_shift.return_value = {
+            "is_night_shift": 1, "start_time": "22:00:00", "end_time": "01:00:00",
+        }
+
+        device = frappe.get_doc("Biometric Device", "Test-ZK-Device")
+        records = [
+            {"user_id": "100", "timestamp": get_datetime("2026-02-01 22:12:01"), "punch": 0, "uid": 1},
+            {"user_id": "100", "timestamp": get_datetime("2026-02-02 01:11:00"), "punch": 0, "uid": 2},
+            {"user_id": "100", "timestamp": get_datetime("2026-02-02 22:05:00"), "punch": 0, "uid": 3},
+        ]
+
+        grouped, _ = group_records_by_attendance_date(records, device)
+
+        # The 01:11 punch belongs to 01/02, not 02/02.
+        self.assertEqual(len(grouped[("100", getdate("2026-02-01"))]), 2)
+        self.assertEqual(len(grouped[("100", getdate("2026-02-02"))]), 1)
+
+        day1 = sorted(grouped[("100", getdate("2026-02-01"))], key=lambda r: r["timestamp"])
+        self.assertEqual([r["timestamp"] for r in day1],
+                         [get_datetime("2026-02-01 22:12:01"),
+                          get_datetime("2026-02-02 01:11:00")])
+        self.assertEqual(resolve_log_types_for_day(day1), ["IN", "OUT"])
+
+        # Next night starts cleanly with its own IN instead of inheriting an OUT.
+        day2 = sorted(grouped[("100", getdate("2026-02-02"))], key=lambda r: r["timestamp"])
+        self.assertEqual(resolve_log_types_for_day(day2), ["IN"])
 
 
 class TestBiometricDeviceValidation(unittest.TestCase):

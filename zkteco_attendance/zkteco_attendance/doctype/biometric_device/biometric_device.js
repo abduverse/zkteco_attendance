@@ -261,8 +261,11 @@ frappe.ui.form.on("Biometric Device", {
         // ── Subscribe to realtime progress events ─────────────────────────
         const handler = (data) => {
             if (!data || data.device !== frm.doc.name) return;
-            // Ignore progress belonging to a different pull run.
-            if (data.run_id && data.run_id !== run_id) return;
+            // Only progress from THIS pull run may drive the dialog. A payload
+            // without a run_id comes from a different trigger (the scheduler,
+            // or "sync all devices") — rendering it would reset an in-flight
+            // dialog back to "Fetching attendance logs from device...".
+            if (data.run_id !== run_id) return;
 
             switch (data.stage) {
                 case "queued":
@@ -574,6 +577,16 @@ function showEmployeeMappingDialog(frm, res) {
                 callback(r2) {
                     const out = r2.message || {};
                     if (out.success) {
+                        // Reflect the new mapping state in the rows and counters.
+                        dialog.$wrapper.find(".zk-emp-row").each(function () {
+                            const $row = $(this);
+                            const user_id = $row.data("user-id");
+                            const mapping = mappings.find(m => m.user_id === user_id);
+                            if (!mapping) return;
+                            const $link = $row.find(".zk-emp-link-target");
+                            $link.attr("data-current", mapping.employee || "");
+                        });
+                        syncMappedCounts();
                         dialog.hide();
                         frappe.show_alert({
                             message: __("{0} employee(s) mapped, {1} unmapped, {2} shift assignment(s) updated.",
@@ -642,10 +655,18 @@ function showEmployeeMappingDialog(frm, res) {
             </tr>`;
     }).join("");
 
+    const mapped_badge = `<span class="label label-success zk-count-mapped" style="display:inline-block; padding:3px 9px; border-radius:999px; font-size:11px; font-weight:600; line-height:1.2;">${__("Mapped")}: <b>0</b></span>`;
+    const unmapped_badge = `<span class="label zk-count-unmapped" style="display:inline-block; padding:3px 9px; border-radius:999px; font-size:11px; font-weight:600; line-height:1.2; background:#fef3c7; color:#92400e;">${__("Unmapped")}: <b>0</b></span>`;
+
     $body.html(`
         <div class="zk-emp-mapping">
             <div class="text-muted" style="margin-bottom:8px;">
                 ${__("{0} user(s) enrolled on this device. Tick the rows to map, optionally use the search box to filter them, then click Map Selected Rows. Setting Shift Type moves the employee into the matching shift assignment; clearing it removes them from their current one.", [users.length])}
+            </div>
+            <div class="zk-emp-counts" style="margin-bottom:8px;">
+                ${mapped_badge}
+                ${unmapped_badge}
+                <span class="text-muted zk-count-total" style="margin-left:6px; font-size:11px;">${__("of {0} user(s) on device", [users.length])}</span>
             </div>
             <div class="zk-emp-search-row" style="margin-bottom:8px;">
                 <input type="text"
@@ -677,8 +698,26 @@ function showEmployeeMappingDialog(frm, res) {
         </div>
     `);
 
+    // ── Mapped / unmapped counters ──────────────────────────────────────
+    // Recomputed from the live rows (a row's mapping state lives in its
+    // Employee Link target's data-current attribute), so the badges stay
+    // correct after rows are deleted without re-fetching the device list.
+    function syncMappedCounts() {
+        let mapped = 0;
+        let total = 0;
+        $body.find(".zk-emp-row").each(function () {
+            total += 1;
+            const current = ($(this).find(".zk-emp-link-target").attr("data-current") || "").trim();
+            if (current) mapped += 1;
+        });
+        $body.find(".zk-count-mapped").html(`${__("Mapped")}: <b>${mapped}</b>`);
+        $body.find(".zk-count-unmapped").html(`${__("Unmapped")}: <b>${total - mapped}</b>`);
+        $body.find(".zk-count-total").text(__("of {0} user(s) on device", [total]));
+    }
+
     // ── Search / filter the fetched device users ────────────────────────
     const $search = $body.find(".zk-emp-search");
+    syncMappedCounts();
     $search.on("input", function () {
         applyEmployeeFilter();
     });
@@ -811,6 +850,7 @@ function showEmployeeMappingDialog(frm, res) {
                         }
                         $row.remove();
                         syncSelectAllCheckbox();
+                        syncMappedCounts();
                         frappe.show_alert({
                             message: __("Device user {0} deleted.", [user_id]),
                             indicator: "green",

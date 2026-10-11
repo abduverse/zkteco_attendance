@@ -108,6 +108,13 @@ def get_pull_progress(device_name, run_id=None):
     result summary under `result` (read from the cached job result), so the
     client learns the outcome from this same poll even though the sync itself
     runs in a background worker.
+
+    If no live snapshot exists for this run, the run's cached final result is
+    returned as a terminal payload.  That happens when a run finished and its
+    progress entries expired, or when it never emitted any progress at all
+    (e.g. it was refused because another sync of the device was already
+    running) — either way the dialog must settle on the real outcome instead
+    of polling forever.
     """
     frappe.only_for(["System Manager", "HR Manager", "Biometric Device Manager"])
 
@@ -119,6 +126,18 @@ def get_pull_progress(device_name, run_id=None):
         result = get_cached_run_result(device_name, run_id)
         if result:
             payload["result"] = result
+
+    if not payload and run_id:
+        result = get_cached_run_result(device_name, run_id)
+        if result:
+            payload = {
+                "device": device_name,
+                "run_id": run_id,
+                "stage": "done" if result.get("success") else "failed",
+                "message": _("Sync completed.") if result.get("success")
+                else (result.get("error") or _("Sync failed.")),
+                "result": result,
+            }
 
     return payload
 
@@ -677,7 +696,7 @@ def sync_device(device_name):
         device_name=device_name,
         triggered_by="Manual",
         queue="long",
-        timeout=600,
+        timeout=3600,
         job_name="zkteco_sync_{}".format(device_name),
     )
 
@@ -696,8 +715,8 @@ def sync_all_devices():
         "zkteco_attendance.zkteco_attendance.sync_engine.sync_all_active_devices",
         triggered_by="Manual",
         queue="long",
-        timeout=600,
-        job_name="zkteco_sync_all",
+        timeout=3600,
+        job_name="zkteco_sync_all_devices",
     )
 
     return {

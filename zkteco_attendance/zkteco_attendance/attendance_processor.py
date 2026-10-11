@@ -794,17 +794,31 @@ def classify_day(day_checkins, shift, doc_missing_action,
         late_min, early_min = _late_early_minutes(day_checkins, shift, work_date)
         sat_class_hours = max(0.0, raw_hours - (late_min + early_min) / 60.0)
 
-        # Overtime is calculated on the actual worked hours (after grace deductions) minus the minimum required for half-day credit.
-        overtime_threshold_minutes = flt(shift.get("overtime_threshold_minutes") or 0)
-        if (sat_class_hours - overtime_threshold_minutes / 60.0) > half_hours:
-            sat_ot_hours = max(0.0, sat_class_hours - half_hours)
+        # Overtime on Saturday obeys the shift's overtime settings exactly like
+        # any other working day: with overtime disabled there is no OT at all,
+        # and with the 'OT Punches Only' method only explicit OT punches count.
+        # In both cases the hours-based Saturday OT derived below is skipped.
+        enable_ot = bool(shift.get("enable_overtime"))
+        ot_method = (shift.get("overtime_calculation_method") or "After Standard Hours").strip()
+        if not enable_ot:
+            sat_ot = dict(empty_ot)
+        elif ot_method == "OT Punches Only":
+            sat_ot = calc_overtime_hours(day_checkins, shift, sat_class_hours,
+                                         day_type=day_type, method=method,
+                                         work_date=work_date)
         else:
-            sat_ot_hours = 0.0
-        sat_ot = {"overtime_hours": round(sat_ot_hours, 2),
-                  "day_ot_hours": round(sat_ot_hours, 2),
-                  "night_ot_hours": 0.0,
-                  "weekend_ot_hours": 0.0,
-                  "holiday_ot_hours": 0.0}
+            # Overtime is calculated on the actual worked hours (after grace
+            # deductions) minus the minimum required for half-day credit.
+            overtime_threshold_minutes = flt(shift.get("overtime_threshold_minutes") or 0)
+            if (sat_class_hours - overtime_threshold_minutes / 60.0) > half_hours:
+                sat_ot_hours = max(0.0, sat_class_hours - half_hours)
+            else:
+                sat_ot_hours = 0.0
+            sat_ot = {"overtime_hours": round(sat_ot_hours, 2),
+                      "day_ot_hours": round(sat_ot_hours, 2),
+                      "night_ot_hours": 0.0,
+                      "weekend_ot_hours": 0.0,
+                      "holiday_ot_hours": 0.0}
         sat_flags = {"is_late": late_min > 0, "is_early_exit": early_min > 0,
                      "late_minutes": round(late_min, 1),
                      "early_minutes": round(early_min, 1)}

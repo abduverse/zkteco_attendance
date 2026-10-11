@@ -316,6 +316,12 @@ In every case the **OT Threshold (minutes)** is enforced — total OT at or
 below it is discarded (no OT for a few minutes of rounding) — and the
 **Max OT Hours per Day** cap is applied proportionally across categories.
 
+Saturday (**Saturday Working Mode = Half Day**) follows these settings like
+any other working day: with **Enable Overtime Calculation** off no overtime
+is recorded, and with **OT Punches Only** only explicit OT punches count —
+the hours worked beyond the Saturday half-day minimum are not paid as
+overtime on their own.
+
 So a guard who works 17:00→06:00 on a night shift gets their
 Night OT window hours counted as Night OT, and anyone who works a Sunday or
 a public holiday is paid all of it as OT.
@@ -430,6 +436,14 @@ Approver** are created automatically on install.
   stored logs, ensure your web server/reverse proxy timeout is generous
   (5–10 minutes), or use **Clear Device Logs After Sync** to keep device
   storage small.
+- **Pull dialog jumps back to "Fetching attendance logs from device…", or a
+  pull reports "already running"** — only one sync per device runs at a time,
+  and the progress dialog shows progress for its own pull run only, so an
+  auto-sync of the same device can never be mistaken for it. If a scheduled
+  auto-sync is still running, wait for it to finish (see **Attendance Sync
+  Log**) and start the pull again. A device whose sync keeps restarting is
+  usually one that has never completed a sync — check the Sync Log for its
+  error details.
 - **Overtime numbers look unexpected** — confirm the shift's **Overtime
   Calculation Method** and its Standard Daily Hours / Night OT window in
   section 5; OT is based on clock windows or the shift end time, not on

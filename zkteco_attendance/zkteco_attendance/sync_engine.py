@@ -7,7 +7,7 @@ Employee Checkin records, and logging results to Attendance Sync Log.
 import frappe
 from frappe import _
 from frappe.utils import now_datetime, get_datetime, getdate, cint
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from .zk_client import pull_attendance_from_device, get_punch_type, is_overtime_punch
 from .attendance_processor import get_shift_for_employee, _coerce_time
@@ -17,8 +17,20 @@ from .attendance_processor import get_shift_for_employee, _coerce_time
 # Realtime progress helper
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _progress_cache_key(device_name, user):
-    return "zkteco_pull_progress:{}:{}".format(device_name, user or "system")
+def _progress_cache_key(device_name, user, run_id=None):
+    """Cache key for a run's latest progress payload.
+
+    Two keys are used per device+user: the shared key (no run_id) and, when
+    the caller knows its run_id, a per-run key.  The shared key is what the
+    polling fallback reads when no run_id is supplied; the per-run key keeps
+    one run's progress from being overwritten by another run of the same
+    device (a scheduler sync, for instance) — which used to leave an
+    in-flight dialog frozen on a stale stage.
+    """
+    key = "zkteco_pull_progress:{}:{}".format(device_name, user or "system")
+    if run_id:
+        key = "{}:{}".format(key, run_id)
+    return key
 
 
 def _get_cache():
@@ -50,10 +62,16 @@ def _emit_progress(device_name, user, stage, current=0, total=0, message="", ext
         pass
     # Also cache the latest payload so the form can poll for progress when
     # realtime/websocket delivery is unavailable (e.g. behind a proxy that
-    # doesn't forward websockets). Keyed per device+user with a TTL.
+    # doesn't forward websockets). Keyed per device+user with a TTL, plus a
+    # per-run key so a concurrent run of the same device cannot overwrite
+    # this run's snapshot.
     try:
-        _get_cache().set_value(_progress_cache_key(device_name, user), payload,
-                               expires_in_sec=600)
+        cache = _get_cache()
+        cache.set_value(_progress_cache_key(device_name, user), payload,
+                        expires_in_sec=600)
+        if run_id:
+            cache.set_value(_progress_cache_key(device_name, user, run_id), payload,
+                            expires_in_sec=1800)
     except Exception:
         pass
 
@@ -63,17 +81,108 @@ def get_live_progress(device_name, user=None, run_id=None):
     Return the most recent cached progress payload for a device+user pull.
     When run_id is given, only a payload belonging to that exact pull run is
     returned (stale payloads from previous pulls are ignored).
+
+    The per-run snapshot is checked first; the shared snapshot is only used
+    as a fallback and only when it belongs to the requested run (or when no
+    run_id was asked for).
     """
     try:
-        payload = _get_cache().get_value(
-            _progress_cache_key(device_name, user or frappe.session.user))
+        cache = _get_cache()
     except Exception:
         return None
-    if not payload:
-        return None
-    if run_id and payload.get("run_id") != run_id:
-        return None
-    return payload
+
+    keys = []
+    if run_id:
+        keys.append(_progress_cache_key(device_name, user or frappe.session.user, run_id))
+    keys.append(_progress_cache_key(device_name, user or frappe.session.user))
+
+    for key in keys:
+        try:
+            payload = cache.get_value(key)
+        except Exception:
+            payload = None
+        if not payload:
+            continue
+        if run_id and payload.get("run_id") != run_id:
+            # The shared snapshot belongs to a different run — not ours.
+            continue
+        return payload
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-device in-flight lock
+# ─────────────────────────────────────────────────────────────────────────────
+# Pulling a device with tens of thousands of stored logs takes minutes, and
+# nothing used to stop a *second* sync of the same device from starting
+# while the first was still running.  The scheduler made that certain:
+# `last_sync_time` is only written when a sync finishes, so every minute
+# `sync_devices_on_schedule` saw a device that still looked overdue and
+# started yet another full sync.  The overlapping runs re-pulled and
+# re-inserted the same logs, and — because a scheduler run carries no
+# run_id — their progress events were indistinguishable from an unrelated
+# manual pull, resetting a live dialog back to "Fetching attendance logs
+# from device...".
+#
+# The lock lives in Redis, so every worker and gunicorn process agrees on it.
+# It is best-effort by design: if the cache is unavailable the sync still
+# runs (no lock) rather than being blocked by a broken cache.
+SYNC_LOCK_TTL_SECONDS = 60 * 60
+
+
+def _sync_lock_key(device_name):
+    return "zkteco_sync_lock:{}".format(device_name)
+
+
+def acquire_device_sync_lock(device_name, ttl_seconds=SYNC_LOCK_TTL_SECONDS):
+    """
+    Claim the exclusive sync lock for a device.
+
+    Returns an opaque token string when this caller owns the lock, or None
+    when another sync of the same device is already running.  The token must
+    be passed back to release_device_sync_lock so a caller can never release
+    a lock it no longer owns (its lock may have expired and been taken over).
+
+    The lock auto-expires after `ttl_seconds`, so a worker that dies
+    mid-sync can never leave a device permanently un-syncable.
+    """
+    key = _sync_lock_key(device_name)
+    token = frappe.generate_hash(length=20)
+    try:
+        cache = _get_cache()
+    except Exception:
+        return token
+
+    try:
+        # Check-then-write.  Deliberately uses the wrapper's set_value /
+        # get_value (which prefix the key with the site name and pickle the
+        # value) rather than the inherited redis-py set(), which would write
+        # an un-prefixed key that get_value could never find again.  It is
+        # not atomic, but the gap between the check and the write is
+        # microseconds while the trigger it defends against — the
+        # once-a-minute scheduler tick — is minutes behind it.
+        if cache.get_value(key):
+            return None
+        cache.set_value(key, token, expires_in_sec=ttl_seconds)
+        return token
+    except Exception:
+        # Never block a sync because locking itself failed.
+        return token
+
+
+def release_device_sync_lock(device_name, token):
+    """Release the device sync lock, but only if this caller still owns it."""
+    if not token:
+        return
+    key = _sync_lock_key(device_name)
+    try:
+        cache = _get_cache()
+        if cache.get_value(key) != token:
+            # The lock expired (or was taken over by another sync) — leave it.
+            return
+        cache.delete_value(key)
+    except Exception:
+        pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -328,11 +437,12 @@ def group_records_by_attendance_date(records, device):
     """
     Group records by (user_id, attendance date) for IN/OUT resolution.
 
-    Night-shift aware: a punch at or before the assigned shift's end time
-    (i.e. early AM) is attributed to the previous calendar day, so an IN at
-    17:03 on 01/01 and an OUT at 05:58 on 02/01 land in the same group and
-    alternate correctly instead of each becoming the first (IN) punch of
-    their own calendar day.
+    Night-shift aware: a punch is attributed to the day the shift STARTED,
+    not its own calendar day.  So an IN at 17:03 on 01/01 and an OUT at
+    05:58 on 02/01 land in the same group and alternate correctly instead of
+    each becoming the first (IN) punch of their own calendar day — and a
+    late OUT such as 01:11 on 02/01 for a 22:00-01:00 shift still belongs to
+    01/01 rather than starting a new 02/01 group.
 
     Returns (grouped, emp_cache) where grouped is {(user_id, date): [rec,...]}
     and emp_cache maps user_id -> matched Employee dict (reused by Step 4 to
@@ -353,8 +463,12 @@ def get_attendance_date_for_punch(user_id, timestamp, device, emp_cache, shift_c
     """
     Return the attendance date a punch belongs to.
 
-    For night shifts, a punch in the early AM (at or before the shift end
-    time) belongs to the previous calendar day's shift. Matches the
+    For a cross-midnight night shift (start_time > end_time) a punch belongs
+    to the most recent shift start at or before it, allowing a 60-minute
+    buffer before the official start for early arrivals.  Early-AM punches
+    therefore roll back to the previous calendar day, while a punch after
+    midnight stays on the day the shift started even when it falls past the
+    shift's end time (e.g. a 01:11 OUT on a 22:00-01:00 shift).  Matches the
     attribution used by attendance_processor.group_checkins_by_date so the
     IN/OUT alternation here agrees with how hours are later computed.
     Falls back to the raw calendar date when no employee or no shift
@@ -374,14 +488,64 @@ def get_attendance_date_for_punch(user_id, timestamp, device, emp_cache, shift_c
     shift = shift_cache[cache_key]
 
     if shift.get("is_night_shift"):
-        end_str = str(shift.get("end_time") or "06:00:00")
-        end_t = _coerce_time(end_str)
+        start_t = _coerce_time(str(shift.get("start_time") or "17:00:00"))
+        end_t   = _coerce_time(str(shift.get("end_time") or "06:00:00"))
+        if start_t > end_t:
+            # Cross-midnight shift (e.g. 22:00 -> 01:00).  A punch belongs to
+            # the day the shift STARTED: only the early-AM hours before the
+            # shift start (minus a 60-minute early-arrival buffer) roll back
+            # to the previous day.  A punch AFTER midnight stays on the start
+            # day even when it is past the shift's end time — a 01:11 OUT on a
+            # 22:00-01:00 shift is the OUT of 01/02, not the first IN of 02/02.
+            # Mirrors attendance_processor.group_checkins_by_date exactly.
+            shift_start = datetime.combine(timestamp.date(), start_t)
+            if timestamp < shift_start - timedelta(minutes=60):
+                return (timestamp - timedelta(days=1)).date()
+            return timestamp.date()
+        # Night shift that does not cross midnight (unusual)
         if timestamp.time() <= end_t:
             return (timestamp - timedelta(days=1)).date()
     return timestamp.date()
 
 
 def sync_device(device_name, triggered_by="Manual", user=None, run_id=None):
+    """
+    Sync one device, guarded by a per-device lock so the same device is
+    never synced twice at once (see acquire_device_sync_lock for why that
+    matters).  The actual work lives in _sync_device_locked.
+
+    When another sync of the device is already running this returns
+    {"success": False, "error": ...} without touching the device, and the
+    caller's run_id (if any) is told about it so its progress dialog can
+    settle instead of waiting for progress that will never come.
+    """
+    user = user or frappe.session.user
+
+    token = acquire_device_sync_lock(device_name)
+    if token is None:
+        message = _(
+            "A sync for device {0} is already running. Please wait for it to finish, then try again."
+        ).format(device_name)
+        _emit_progress(device_name, user, "failed", message=message, run_id=run_id)
+        return {
+            "success": False,
+            "error": message,
+            "device": device_name,
+            "total_records": 0,
+            "new_records": 0,
+            "duplicates": 0,
+            "failed": 0,
+            "already_running": True,
+        }
+
+    try:
+        return _sync_device_locked(device_name, triggered_by=triggered_by,
+                                   user=user, run_id=run_id)
+    finally:
+        release_device_sync_lock(device_name, token)
+
+
+def _sync_device_locked(device_name, triggered_by="Manual", user=None, run_id=None):
     device = frappe.get_doc("Biometric Device", device_name)
     user = user or frappe.session.user
 
@@ -574,7 +738,7 @@ def sync_device(device_name, triggered_by="Manual", user=None, run_id=None):
     return result
 
 
-def sync_all_active_devices(frequency_filter=None, triggered_by="Scheduler"):
+def sync_all_active_devices(frequency_filter=None, triggered_by="Scheduler", enqueue=True):
     filters = {"enable": 1, "auto_sync_enabled": 1}
     if frequency_filter:
         filters["sync_frequency"] = frequency_filter
@@ -582,9 +746,25 @@ def sync_all_active_devices(frequency_filter=None, triggered_by="Scheduler"):
     results = []
     for d in devices:
         try:
-            result = sync_device(d["name"], triggered_by=triggered_by)
-            result["device"] = d["name"]
-            results.append(result)
+            if enqueue:
+                # Enqueue with an explicit generous timeout instead of calling
+                # sync_device directly — a direct call inherits the caller's
+                # timeout (e.g. the scheduler job's 300s RQ default), which is
+                # far too short for a device with tens of thousands of logs.
+                frappe.enqueue(
+                    "zkteco_attendance.zkteco_attendance.sync_engine.run_sync_job",
+                    device_name=d["name"],
+                    triggered_by=triggered_by,
+                    user=None,
+                    queue="long",
+                    timeout=3600,
+                    job_name="zkteco_sync_all_{}".format(d["name"]),
+                )
+                results.append({"device": d["name"], "success": True, "status": "queued"})
+            else:
+                result = sync_device(d["name"], triggered_by=triggered_by)
+                result["device"] = d["name"]
+                results.append(result)
         except Exception as e:
             frappe.log_error(message="Scheduler sync failed for {}: {}".format(d["name"], str(e)),
                              title="ZKTeco Scheduler Error")

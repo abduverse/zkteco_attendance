@@ -367,8 +367,11 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
 
         const handler = (data) => {
             if (!data) return;
-            // Ignore progress belonging to a different pull run.
-            if (data.run_id && data.run_id !== run_id) return;
+            // Only progress from THIS pull run may drive the dialog. A payload
+            // without a run_id comes from a different trigger (the scheduler,
+            // or "sync all devices") — rendering it would reset an in-flight
+            // dialog back to "Fetching attendance logs from device...".
+            if (data.run_id !== run_id) return;
 
             switch (data.stage) {
                 case "queued":
@@ -740,6 +743,33 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
             primary_action_label: __("Close"),
             primary_action: () => dlg.hide(),
         });
+
+        // Download Excel — server re-runs the invalids query with the same
+        // filters and streams back an .xlsx workbook.
+        dlg.$wrapper.find(".modal-header .modal-actions").prepend(`
+            <button class="btn btn-default btn-sm zk-invalids-excel-btn"
+                    title="${__("Download the invalid days list as an Excel workbook")}">
+                <i class="fa fa-file-excel-o"></i> ${__("Download Excel")}
+            </button>`);
+        dlg.$wrapper.find(".zk-invalids-excel-btn").on("click", function () {
+            const query_payload = {
+                from_date:          payload.from_date || "",
+                to_date:            payload.to_date   || "",
+                attendance_summary: state.attendance_summary || "",
+                employee_list:      state.employee_list.length ? JSON.stringify(state.employee_list) : "",
+                biometric_device:   state.biometric_device || "",
+                filter_employee:    state.filter_employee || "",
+                filter_project:     state.filter_project || "",
+            };
+            const query = Object.keys(query_payload)
+                .filter(k => query_payload[k])
+                .map(k => encodeURIComponent(k) + "=" + encodeURIComponent(query_payload[k]))
+                .join("&");
+            const url = "/api/method/zkteco_attendance.zkteco_attendance.page.zk_daily_checkins.zk_daily_checkins.download_invalid_days_excel?" + query;
+            frappe.show_alert({ message: __("Preparing Excel download…"), indicator: "blue" }, 4);
+            window.location.href = url;
+        });
+
         dlg.show();
     }
 
@@ -1167,10 +1197,11 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                     const $w = get_shift_wrapper(dlg);
                     if ($w && $w.length) render_shift_html($w, r.message);
                     // Prefill the Make Present Start/End Times from the
-                    // employee's shift start/end for the selected date.
+                    // employee's shift start/end for the selected date,
+                    // exactly as the shift defines them (no shifting).
                     if (r.message) {
-                        if (r.message.start_time) dlg.set_value("start_time", normalize_time(plusHours(r.message.start_time, 8)));
-                        if (r.message.end_time) dlg.set_value("end_time", normalize_time(plusHours(r.message.end_time, 8)));
+                        if (r.message.start_time) dlg.set_value("start_time", normalize_time(r.message.start_time));
+                        if (r.message.end_time) dlg.set_value("end_time", normalize_time(r.message.end_time));
                     }
                 },
             });
