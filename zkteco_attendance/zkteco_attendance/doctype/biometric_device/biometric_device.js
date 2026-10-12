@@ -584,7 +584,14 @@ function showEmployeeMappingDialog(frm, res) {
                             const mapping = mappings.find(m => m.user_id === user_id);
                             if (!mapping) return;
                             const $link = $row.find(".zk-emp-link-target");
+                            const was = $link.attr("data-current") || "";
                             $link.attr("data-current", mapping.employee || "");
+                            if (!!was.trim() !== !!mapping.employee) {
+                                // mapped-ness flipped: re-apply the filter so an
+                                // Unmapped filter doesn't keep showing the row
+                                // (or a Mapped filter keeps hiding it).
+                                applyEmployeeFilter();
+                            }
                         });
                         syncMappedCounts();
                         dialog.hide();
@@ -668,11 +675,17 @@ function showEmployeeMappingDialog(frm, res) {
                 ${unmapped_badge}
                 <span class="text-muted zk-count-total" style="margin-left:6px; font-size:11px;">${__("of {0} user(s) on device", [users.length])}</span>
             </div>
-            <div class="zk-emp-search-row" style="margin-bottom:8px;">
+            <div class="zk-emp-search-row" style="margin-bottom:8px; display:flex; align-items:center; gap:8px;">
                 <input type="text"
                        class="form-control input-xs zk-emp-search"
                        placeholder="${__("Search device ID or name…")}"
                        autocomplete="off" />
+                <select class="form-control input-xs zk-emp-map-filter" style="width:130px; flex:none;"
+                        title="${__("Show only mapped, only unmapped, or all device users")}">
+                    <option value="all">${__("All")}</option>
+                    <option value="mapped">${__("Mapped")}</option>
+                    <option value="unmapped">${__("Unmapped")}</option>
+                </select>
             </div>
             <div style="max-height:420px; overflow:auto;">
                 <table class="table table-bordered table-sm" style="margin-bottom:0;">
@@ -717,17 +730,26 @@ function showEmployeeMappingDialog(frm, res) {
 
     // ── Search / filter the fetched device users ────────────────────────
     const $search = $body.find(".zk-emp-search");
+    const $mapFilter = $body.find(".zk-emp-map-filter");
     syncMappedCounts();
     $search.on("input", function () {
+        applyEmployeeFilter();
+    });
+    $mapFilter.on("change", function () {
         applyEmployeeFilter();
     });
 
     function applyEmployeeFilter() {
         const term = ($search.val() || "").trim().toLowerCase();
+        const mapFilter = $mapFilter.val() || "all";
         $body.find(".zk-emp-row").each(function () {
             const $row = $(this);
             const text = ($row.text() || "").toLowerCase();
-            $row.toggle(!term || text.indexOf(term) !== -1);
+            const mapped = !!($row.find(".zk-emp-link-target").attr("data-current") || "").trim();
+            const mapOk = mapFilter === "all"
+                || (mapFilter === "mapped" && mapped)
+                || (mapFilter === "unmapped" && !mapped);
+            $row.toggle(mapOk && (!term || text.indexOf(term) !== -1));
         });
         syncSelectAllCheckbox();
     }

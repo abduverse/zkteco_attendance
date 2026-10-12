@@ -127,7 +127,10 @@ def get_live_progress(device_name, user=None, run_id=None):
 # The lock lives in Redis, so every worker and gunicorn process agrees on it.
 # It is best-effort by design: if the cache is unavailable the sync still
 # runs (no lock) rather than being blocked by a broken cache.
-SYNC_LOCK_TTL_SECONDS = 60 * 60
+# 30 min TTL: a real pull takes minutes; a worker that dies mid-sync can
+# leave its device blocked for at most half an hour before the lock
+# self-expires.
+SYNC_LOCK_TTL_SECONDS = 30 * 60
 
 
 def _sync_lock_key(device_name):

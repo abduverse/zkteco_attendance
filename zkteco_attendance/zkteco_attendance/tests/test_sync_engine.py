@@ -65,7 +65,6 @@ class TestSyncEngine(unittest.TestCase):
         ts = now_datetime()
         result = checkin_exists("HR-EMP-00001", ts, "Test-ZK-Device")
         self.assertFalse(result)
-
     def test_device_sync_lock_is_exclusive_and_released(self):
         """
         Only one sync per device may run at a time. A second acquire while
@@ -482,6 +481,179 @@ class TestSyncEngine(unittest.TestCase):
         # Next night starts cleanly with its own IN instead of inheriting an OUT.
         day2 = sorted(grouped[("100", getdate("2026-02-02"))], key=lambda r: r["timestamp"])
         self.assertEqual(resolve_log_types_for_day(day2), ["IN"])
+
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_employee_by_biometric_id")
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_shift_for_employee")
+    def test_night_shift_early_arrival_within_60min_buffer_belongs_to_start_day(self, mock_shift, mock_emp):
+        """
+        A punch at 21:20 (40 minutes BEFORE the 22:00 shift start but within
+        the 60-minute early-arrival buffer) belongs to that day's shift, not
+        to the PREVIOUS day.  An hour before (21:00 boundary values) must
+        still belong to the start day, while 20:59 falls before the buffer
+        and rolls back to the previous day.
+        """
+        from zkteco_attendance.zkteco_attendance.sync_engine import get_attendance_date_for_punch
+
+        mock_emp.return_value = {"name": "HR-EMP-00001", "employee_name": "Test", "company": "Acme"}
+        mock_shift.return_value = {
+            "is_night_shift": 1, "start_time": "22:00:00", "end_time": "01:00:00",
+        }
+
+        device = frappe.get_doc("Biometric Device", "Test-ZK-Device")
+        emp_cache, shift_cache = {}, {}
+
+        d = get_attendance_date_for_punch(
+            "100", get_datetime("2026-02-01 21:20:00"), device, emp_cache, shift_cache)
+        self.assertEqual(d, getdate("2026-02-01"))
+
+        # exactly 60 min before start (buffer edge) -> still the start day
+        d = get_attendance_date_for_punch(
+            "100", get_datetime("2026-02-01 21:00:00"), device, emp_cache, shift_cache)
+        self.assertEqual(d, getdate("2026-02-01"))
+
+        # one minute beyond the buffer -> previous day
+        d = get_attendance_date_for_punch(
+            "100", get_datetime("2026-02-01 20:59:00"), device, emp_cache, shift_cache)
+        self.assertEqual(d, getdate("2026-01-31"))
+
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_employee_by_biometric_id")
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_shift_for_employee")
+    def test_night_shift_punch_exactly_at_midnight_stays_start_day(self, mock_shift, mock_emp):
+        """A punch exactly at 00:00 of the next calendar day stays on the
+        shift's start day (midnight itself is not before shift start)."""
+        from zkteco_attendance.zkteco_attendance.sync_engine import get_attendance_date_for_punch
+
+        mock_emp.return_value = {"name": "HR-EMP-00001", "employee_name": "Test", "company": "Acme"}
+        mock_shift.return_value = {
+            "is_night_shift": 1, "start_time": "22:00:00", "end_time": "01:00:00",
+        }
+
+        device = frappe.get_doc("Biometric Device", "Test-ZK-Device")
+        d = get_attendance_date_for_punch(
+            "100", get_datetime("2026-02-02 00:00:00"), device, {}, {})
+        self.assertEqual(d, getdate("2026-02-01"))
+
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_employee_by_biometric_id")
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_shift_for_employee")
+    def test_night_shift_gap_between_two_consecutive_groups(self, mock_shift, mock_emp):
+        """
+        Punches between the end of one night and the start of the next
+        (e.g. 10:00 on 02/02 between the 01:00 end and the 22:00 start) must
+        roll back to the PREVIOUS day via the >60-min-before-start rule and
+        join that day's group — they can never start a spurious mid-day
+        group.
+        """
+        from zkteco_attendance.zkteco_attendance.sync_engine import get_attendance_date_for_punch
+
+        mock_emp.return_value = {"name": "HR-EMP-00001", "employee_name": "Test", "company": "Acme"}
+        mock_shift.return_value = {
+            "is_night_shift": 1, "start_time": "22:00:00", "end_time": "01:00:00",
+        }
+
+        device = frappe.get_doc("Biometric Device", "Test-ZK-Device")
+        d = get_attendance_date_for_punch(
+            "100", get_datetime("2026-02-02 10:00:00"), device, {}, {})
+        self.assertEqual(d, getdate("2026-02-01"))
+
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_employee_by_biometric_id")
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_shift_for_employee")
+    def test_night_shift_full_swing_22_to_6_alternates_four_shifts(self, mock_shift, mock_emp):
+        """
+        Realistic 22:00-06:00 swing over ~4 nights: every group must contain
+        exactly one IN and one OUT, and each day's OUT must come from the
+        early AM AFTER (past-midnight day) — the grouping must never drift.
+        """
+        from zkteco_attendance.zkteco_attendance.sync_engine import (
+            group_records_by_attendance_date,
+            resolve_log_types_for_day,
+        )
+
+        mock_emp.return_value = {"name": "HR-EMP-00001", "employee_name": "Test", "company": "Acme"}
+        mock_shift.return_value = {
+            "is_night_shift": 1, "start_time": "22:00:00", "end_time": "06:00:00",
+        }
+
+        device = frappe.get_doc("Biometric Device", "Test-ZK-Device")
+        records = []
+        for day in range(1, 5):  # nights of 01-04 Feb
+            records.append({"user_id": "100", "uid": day * 2 - 1,
+                            "timestamp": get_datetime("2026-02-{:02d} 21:58:00".format(day)),
+                            "punch": 0, "status": 0})
+            records.append({"user_id": "100", "uid": day * 2,
+                            "timestamp": get_datetime("2026-02-{:02d} 06:02:00".format(day + 1)),
+                            "punch": 0, "status": 0})
+
+        grouped, _ = group_records_by_attendance_date(records, device)
+
+        # 4 groups: attendance days Feb 1..4, each with exactly its IN+OUT.
+        self.assertEqual(len(grouped), 4)
+        for day in range(1, 5):
+            day_recs = sorted(grouped[("100", getdate("2026-02-{:02d}".format(day)))],
+                              key=lambda r: r["timestamp"])
+            self.assertEqual(len(day_recs), 2, "group {} should hold IN+OUT".format(day))
+            self.assertEqual(day_recs[0]["timestamp"].day, day, "IN must be on start day")
+            self.assertEqual(resolve_log_types_for_day(day_recs), ["IN", "OUT"])
+
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_employee_by_biometric_id")
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_shift_for_employee")
+    def test_night_shift_missing_out_next_day_in_places_even(self, mock_shift, mock_emp):
+        """
+        Employee forgets the OUT, then punches late the NEXT afternoon
+        (18:00 = a new IN).  Groups must be [1 punch] then [1 punch], NOT
+        both in the same day — an afternoon punch after a night shift's end
+        must start the new day's group rather than attach to the previous
+        one.
+        """
+        from zkteco_attendance.zkteco_attendance.sync_engine import group_records_by_attendance_date
+
+        mock_emp.return_value = {"name": "HR-EMP-00001", "employee_name": "Test", "company": "Acme"}
+        mock_shift.return_value = {
+            "is_night_shift": 1, "start_time": "22:00:00", "end_time": "01:00:00",
+        }
+
+        device = frappe.get_doc("Biometric Device", "Test-ZK-Device")
+        records = [
+            {"user_id": "100", "timestamp": get_datetime("2026-02-01 22:10:00"), "punch": 0, "uid": 1},
+            # missing OUT ...
+            {"user_id": "100", "timestamp": get_datetime("2026-02-02 18:00:00"), "punch": 0, "uid": 2},
+        ]
+
+        grouped, _ = group_records_by_attendance_date(records, device)
+
+        # 18:00 is >60 min before the 22:00 start -> previous day, so it
+        # joins the 02-01 group (attributed as its OUT).
+        self.assertEqual(len(grouped), 1)
+        self.assertEqual(len(grouped[("100", getdate("2026-02-01"))]), 2)
+
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_employee_by_biometric_id")
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_shift_for_employee")
+    def test_night_shift_emp_from_buffer_cache_reused_not_relabeled(self, mock_shift, mock_emp):
+        """
+        The (employee, date) shift cache must not poison later punch years:
+        asking for a punch on a DIFFERENT date must look up a shift again
+        (cache key includes the punch date), keeping an old assignment from
+        being applied to later changes.
+        """
+        from zkteco_attendance.zkteco_attendance.sync_engine import get_attendance_date_for_punch
+
+        emp = {"name": "HR-EMP-00001", "employee_name": "Test", "company": "Acme"}
+        mock_emp.return_value = emp
+        mock_shift.return_value = {
+            "is_night_shift": 1, "start_time": "22:00:00", "end_time": "01:00:00",
+        }
+
+        device = frappe.get_doc("Biometric Device", "Test-ZK-Device")
+        emp_cache, shift_cache = {}, {}
+
+        d1 = get_attendance_date_for_punch(
+            "100", get_datetime("2026-02-02 00:30:00"), device, emp_cache, shift_cache)
+        self.assertEqual(d1, getdate("2026-02-01"))
+
+        # Same employee, different date — must hit the DB again (call count 2).
+        d2 = get_attendance_date_for_punch(
+            "100", get_datetime("2026-03-01 00:30:00"), device, emp_cache, shift_cache)
+        self.assertEqual(d2, getdate("2026-02-28"))
+        self.assertEqual(mock_shift.call_count, 2)
 
 
 class TestBiometricDeviceValidation(unittest.TestCase):
