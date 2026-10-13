@@ -1,0 +1,16 @@
+{
+ "creation": "2026-10-12 00:00:00.000000",
+ "doctype": "Page",
+ "icon": "small-file",
+ "module": "Zkteco Attendance",
+ "name": "zk-import-checkins",
+ "page_name": "zk-import-checkins",
+ "roles": [
+  {"role": "System Manager"},
+  {"role": "HR Manager"},
+  {"role": "Biometric Device Manager"}
+ ],
+ "standard": "Yes",
+ "system_page": 0,
+ "title": "Import Checkins"
+}

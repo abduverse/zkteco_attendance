@@ -167,3 +167,177 @@
 .zk-daily-table tr td:first-child .text-muted {
     font-size: 0.68rem;
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Import Checkins page
+   ───────────────────────────────────────────────────────────────────────── */
+.zk-import-wrap {
+    max-width: 900px;
+    margin: 0 auto;
+    padding-top: 8px;
+}
+
+/* Intro callout */
+.zk-import-intro {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    border: 1px solid var(--blue-200);
+    background: var(--blue-50);
+    border-radius: var(--border-radius);
+    padding: 14px 16px;
+}
+
+.zk-import-intro .fa {
+    font-size: 1.3rem;
+    color: var(--blue-500);
+    margin-top: 2px;
+}
+
+/* Device link selector row */
+.zk-import-device-row {
+    margin-top: 16px;
+    display: flex;
+}
+
+.zk-import-device-row #zk-import-device {
+    min-width: 300px;
+    flex: 0 1 300px;
+}
+
+/* File + summary two-column form area */
+.zk-import-form-row {
+    display: flex;
+    gap: 20px;
+    margin-top: 16px;
+    flex-wrap: wrap;
+}
+
+.zk-import-file-col {
+    flex: 1 1 320px;
+}
+
+.zk-import-file-drop {
+    border: 2px dashed var(--gray-300);
+    border-radius: var(--border-radius);
+    padding: 22px 16px;
+    text-align: center;
+    background: var(--card-bg);
+    transition: border-color 0.15s ease, background 0.15s ease;
+    cursor: pointer;
+}
+
+.zk-import-file-drop:hover,
+.zk-import-file-drop.zk-dragover {
+    border-color: var(--blue-400);
+    background: var(--blue-50);
+}
+
+.zk-import-file-drop .fa {
+    font-size: 1.6rem;
+    color: var(--gray-500);
+    margin-bottom: 6px;
+}
+
+.zk-import-file-input {
+    display: none;
+}
+
+.zk-import-file-drop.drag-ok .fa {
+    color: var(--green-500);
+}
+
+.zk-import-file-hint {
+    margin-top: 10px;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
+.zk-import-file-hint code {
+    background: var(--gray-100);
+    padding: 1px 5px;
+    border-radius: 3px;
+}
+
+/* Download Template button row */
+.zk-import-template-row {
+    margin-top: 12px;
+}
+
+.zk-import-template-btn {
+    color: var(--blue-600);
+    border-color: var(--blue-200);
+}
+
+.zk-import-template-btn:hover {
+    background: var(--blue-50);
+    color: var(--blue-700);
+}
+
+/* Result summary panel */
+.zk-import-summary-col {
+    flex: 1 1 320px;
+}
+
+.zk-import-card {
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    background: var(--card-bg);
+    padding: 16px;
+}
+
+.zk-import-stats {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.zk-import-stat {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--border-color, #eee);
+    padding-bottom: 6px;
+    font-size: 0.9rem;
+}
+
+.zk-import-stat:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+}
+
+.zk-import-stat .stat-label {
+    color: var(--text-muted);
+}
+
+.zk-import-stat .stat-value {
+    font-weight: 700;
+}
+
+.zk-import-stat.ok      .stat-value { color: var(--green-600); }
+.zk-import-stat.warn    .stat-value { color: var(--orange-500); }
+.zk-import-stat.danger  .stat-value { color: var(--red-500); }
+
+.zk-import-hint {
+    margin-top: 6px;
+}
+
+.zk-import-actions {
+    margin-top: 10px;
+}
+
+/* Row problems + unmatched ids */
+.zk-import-problems .alert {
+    margin-top: 14px;
+}
+
+.zk-import-unmatched code {
+    background: var(--orange-50);
+    color: var(--orange-700);
+}
+
+/* Row-problem list inside the warning alert */
+.zk-import-problem-list {
+    margin: 6px 0 0 16px;
+}
+

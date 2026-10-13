@@ -1099,3 +1099,64 @@ def _todays_punch_breakdown(today):
         "labels": [_("IN"), _("OUT"), _("Overtime")],
         "values": [cint(in_count), cint(out_count), cint(overtime_count)],
     }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP 1 — ADD THIS TO THE END OF:
+#   zkteco_attendance/zkteco_attendance/zkteco_attendance/api/endpoints.py
+#
+# Why: Frappe's UI "Server Script" runs in a RestrictedPython sandbox, which
+# cannot `import` app modules. It CAN call a whitelisted function through
+# frappe.call(). This wrapper exposes the app's own processing engine
+# (fetch_checkins + process_employee) so the Server Script reuses 100% of the
+# existing logic: shifts, grace periods, night shifts, holidays, Saturday mode,
+# missing check-in rules, ignored check-ins, manual edits and OT categories.
+# After adding it: `bench --site <site> clear-cache` and restart bench.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@frappe.whitelist()
+def compute_attendance_for_employees(employees, from_date, to_date,
+                                     shift_type=None,
+                                     missing_checkin_action="Mark as Invalid"):
+    """
+    Compute attendance totals from Employee Checkins for a list of employees
+    over a date range, using the same engine as Attendance Summary.
+
+    Returns: { employee: {working_days, absent_days, half_days,
+               total_working_hours, absent_hours, overtime_hours, ... } }
+    Nothing is written to the database.
+    """
+    frappe.only_for(["System Manager", "HR Manager", "Biometric Device Manager"])
+
+    import json as _json
+    from frappe.utils import getdate
+    from zkteco_attendance.zkteco_attendance.attendance_processor import (
+        fetch_checkins, process_employee,
+    )
+
+    if isinstance(employees, str):
+        try:
+            employees = _json.loads(employees)
+        except Exception:
+            employees = [e.strip() for e in employees.split(",") if e.strip()]
+    employees = list(dict.fromkeys(employees or []))   # de-duplicate, keep order
+
+    if not employees:
+        frappe.throw(_("No employees supplied."))
+    if not from_date or not to_date:
+        frappe.throw(_("From Date and To Date are required."))
+    if getdate(from_date) > getdate(to_date):
+        frappe.throw(_("From Date cannot be after To Date."))
+
+    checkins = fetch_checkins(employees, from_date, to_date)
+
+    out = {}
+    for emp in employees:
+        out[emp] = process_employee(
+            employee=emp,
+            from_date=from_date,
+            to_date=to_date,
+            checkin_list=checkins.get(emp, []),
+            default_shift_name=shift_type or None,
+            doc_missing_action=missing_checkin_action or "Mark as Invalid",
+        )
+    return out

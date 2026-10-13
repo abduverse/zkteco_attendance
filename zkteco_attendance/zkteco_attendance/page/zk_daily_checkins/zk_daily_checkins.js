@@ -1013,7 +1013,7 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                 <div class="zk-emp-card" data-employee="${frappe.utils.escape_html(emp.employee)}" style="margin-bottom:4px; border: 1px solid #a19999">
                     <div class="zk-emp-card-head" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border:1px solid var(--border-color);border-radius:var(--border-radius);background:var(--card-bg);">
                         <div>
-                            <span class="text-muted" style="margin-left:8px; border:1px solid #e4e3e3; border-radius:var(--border-radius); padding:2px 4px;"><b>Emp Name:</b> ${frappe.utils.escape_html(emp.employee_name || emp.employee)}</span>
+                            <span class="text-muted" style="margin-left:8px; border:1px solid #e4e3e3; border-radius:var(--border-radius); padding:2px 4px;"><b>Emp Name:</b> <a href="/app/employee/${encodeURIComponent(emp.employee)}" title="${__("Open Employee record")}">${frappe.utils.escape_html(emp.employee_name || emp.employee)}</a></span>
                             <span class="text-muted" style="margin-left:8px; border:1px solid #e4e3e3; border-radius:var(--border-radius); padding:2px 4px;"><b>Emp ID:</b> ${frappe.utils.escape_html(emp.employee)}</span>
                             <span class="text-muted" style="margin-left:8px; border:1px solid #e4e3e3; border-radius:var(--border-radius); padding:2px 4px;">${deviceInfo.join("")}</span>
                         </div>
@@ -1028,7 +1028,10 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
         $body.html(header + `<div class="zk-emp-cards">${cards}</div>`);
 
         // Expand/collapse
-        $body.find(".zk-emp-card-head").on("click", function () {
+        $body.find(".zk-emp-card-head").on("click", function (e) {
+            // Ignore clicks on inner links (e.g. the Emp Name → Employee link):
+            // those should navigate, not toggle the card.
+            if ($(e.target).closest("a").length) return;
             const $card = $(this).closest(".zk-emp-card");
             const employee = $card.data("employee");
             const $cb = $card.find(".zk-emp-card-body");
