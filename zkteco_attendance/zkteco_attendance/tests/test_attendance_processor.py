@@ -1549,5 +1549,141 @@ class TestDailyCheckinsProjectFilter(unittest.TestCase):
         mock_fetch.assert_not_called()
 
 
+class TestRoundTheClockShift(unittest.TestCase):
+    """
+    24-hour shift (Start Time == End Time), e.g. a security guard on duty
+    07:00 -> 07:00 the next day.
+
+    The check-out happens at the same clock time as the next cycle's
+    check-in, so attribution must follow punch order: the check-out at
+    07:00 on 02/01 belongs to the duty that started at 07:00 on 01/01.
+    Guards punch anywhere in a 06:30-07:30 handover window.
+    """
+
+    def _shift(self, **overrides):
+        return _day_shift(is_night_shift=1, start_time="07:00:00",
+                          end_time="07:00:00", **overrides)
+
+    def test_checkout_stays_with_start_day(self):
+        from zkteco_attendance.zkteco_attendance.attendance_processor import (
+            group_checkins_by_date,
+        )
+
+        checkins = [
+            _mk_checkin("C1", "2026-01-01 07:00:00", "IN"),
+            _mk_checkin("C2", "2026-01-02 07:00:00", "OUT"),
+            _mk_checkin("C3", "2026-01-04 07:00:00", "IN"),
+            _mk_checkin("C4", "2026-01-05 07:00:00", "OUT"),
+        ]
+        daily = group_checkins_by_date(
+            checkins, self._shift(),
+            from_date=date(2026, 1, 1), to_date=date(2026, 1, 5),
+        )
+
+        self.assertEqual(sorted(daily), [date(2026, 1, 1), date(2026, 1, 4)])
+        self.assertEqual([c["time"] for c in daily[date(2026, 1, 1)]],
+                         [datetime(2026, 1, 1, 7, 0), datetime(2026, 1, 2, 7, 0)])
+        self.assertEqual([c["log_type"] for c in daily[date(2026, 1, 1)]], ["IN", "OUT"])
+        self.assertEqual([c["log_type"] for c in daily[date(2026, 1, 4)]], ["IN", "OUT"])
+        # 03/01 is the rest day and carries no punches
+        self.assertNotIn(date(2026, 1, 3), daily)
+
+    def test_handover_window_punches_pair_correctly(self):
+        """A 06:30-07:30 check-in/check-out still forms one 24-hour pair."""
+        from zkteco_attendance.zkteco_attendance.attendance_processor import (
+            group_checkins_by_date,
+        )
+
+        checkins = [
+            _mk_checkin("C1", "2026-01-01 06:41:00", "IN"),
+            _mk_checkin("C2", "2026-01-02 07:26:00", "OUT"),
+            _mk_checkin("C3", "2026-01-02 06:55:00", "IN"),
+            _mk_checkin("C4", "2026-01-03 07:12:00", "OUT"),
+        ]
+        daily = group_checkins_by_date(
+            checkins, self._shift(),
+            from_date=date(2026, 1, 1), to_date=date(2026, 1, 3),
+        )
+
+        self.assertEqual(sorted(daily), [date(2026, 1, 1), date(2026, 1, 2)])
+        for att_date in (date(2026, 1, 1), date(2026, 1, 2)):
+            self.assertEqual(len(daily[att_date]), 2)
+            self.assertEqual([c["log_type"] for c in daily[att_date]], ["IN", "OUT"])
+
+    def test_mid_shift_punch_does_not_split_the_cycle(self):
+        from zkteco_attendance.zkteco_attendance.attendance_processor import (
+            group_checkins_by_date,
+        )
+
+        checkins = [
+            _mk_checkin("C1", "2026-01-01 07:05:00", "IN"),
+            _mk_checkin("C2", "2026-01-01 19:00:00", "OUT"),  # patrol round
+            _mk_checkin("C3", "2026-01-02 07:10:00", "OUT"),
+        ]
+        daily = group_checkins_by_date(
+            checkins, self._shift(),
+            from_date=date(2026, 1, 1), to_date=date(2026, 1, 2),
+        )
+
+        self.assertEqual(sorted(daily), [date(2026, 1, 1)])
+        self.assertEqual(len(daily[date(2026, 1, 1)]), 3)
+
+    def test_classify_day_full_24_hours_present(self):
+        from zkteco_attendance.zkteco_attendance.attendance_processor import (
+            classify_day,
+        )
+
+        shift = self._shift(late_entry_grace=10, early_exit_grace=10)
+        # 10 minutes late in and 5 minutes early out — both inside the grace.
+        checkins = [
+            _mk_checkin("C1", "2026-01-01 07:10:00", "IN"),
+            _mk_checkin("C2", "2026-01-02 06:55:00", "OUT"),
+        ]
+        result = classify_day(checkins, shift, "Mark as Invalid",
+                               work_date=date(2026, 1, 1))
+
+        self.assertEqual(result["status"], "Present")
+        self.assertAlmostEqual(result["hours"], 23 + 45 / 60.0, places=2)
+        self.assertFalse(result["is_late"])
+        self.assertFalse(result["is_early_exit"])
+
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_holidays_in_range")
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_shift_for_employee")
+    def test_employee_acceptance_no_invalid_days(self, mock_shift, mock_holidays):
+        """
+        01/01 07:00 IN -> 02/01 07:00 OUT, rest 03/01,
+        04/01 07:00 IN -> 05/01 07:00 OUT.
+
+        Both duty days must be Present: neither may be reported Invalid nor
+        spill its check-out onto the following day.
+        """
+        from zkteco_attendance.zkteco_attendance.attendance_processor import (
+            process_employee,
+        )
+
+        mock_shift.return_value = self._shift()
+        mock_holidays.return_value = {}
+
+        checkins = [
+            _mk_checkin("C1", "2026-01-01 07:00:00", "IN"),
+            _mk_checkin("C2", "2026-01-02 07:00:00", "OUT"),
+            _mk_checkin("C3", "2026-01-04 07:00:00", "IN"),
+            _mk_checkin("C4", "2026-01-05 07:00:00", "OUT"),
+        ]
+        result = process_employee(
+            employee="EMP-GUARD",
+            from_date="2026-01-01",
+            to_date="2026-01-05",
+            checkin_list=checkins,
+            default_shift_name="Guard 24h",
+            doc_missing_action="Mark as Invalid",
+        )
+
+        self.assertEqual(result["invalid_days"], 0)
+        self.assertNotIn("invalid checkin", result["remarks"])
+        # Two completed 24-hour duties = 48 hours on the two check-in days.
+        self.assertAlmostEqual(result["total_working_hours"], 48.0, places=2)
+
+
 if __name__ == "__main__":
     unittest.main()

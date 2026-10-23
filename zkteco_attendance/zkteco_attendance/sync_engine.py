@@ -10,7 +10,12 @@ from frappe.utils import now_datetime, get_datetime, getdate, cint
 from datetime import datetime, timedelta
 
 from .zk_client import pull_attendance_from_device, get_punch_type, is_overtime_punch
-from .attendance_processor import get_shift_for_employee, _coerce_time
+from .attendance_processor import (
+    get_shift_for_employee,
+    get_round_the_clock_attendance_date,
+    is_round_the_clock_shift,
+    _coerce_time,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -447,6 +452,11 @@ def group_records_by_attendance_date(records, device):
     late OUT such as 01:11 on 02/01 for a 22:00-01:00 shift still belongs to
     01/01 rather than starting a new 02/01 group.
 
+    Round-the-clock (24-hour) shifts are resolved per employee in punch
+    order, because their check-out and next check-in happen at the same
+    clock time: the check-out at 07:00 on 02/01 stays with the cycle that
+    started at 07:00 on 01/01.
+
     Returns (grouped, emp_cache) where grouped is {(user_id, date): [rec,...]}
     and emp_cache maps user_id -> matched Employee dict (reused by Step 4 to
     avoid re-querying).
@@ -454,15 +464,31 @@ def group_records_by_attendance_date(records, device):
     emp_cache = {}
     shift_cache = {}
     grouped = {}
+
+    # Employee lookups happen once per user; the punches of a user are
+    # attributed in chronological order so 24-hour cycles can be paired.
+    per_user = {}
     for rec in records:
-        ts = get_datetime(rec["timestamp"])
         user_id = str(rec["user_id"])
-        att_date = get_attendance_date_for_punch(user_id, ts, device, emp_cache, shift_cache)
-        grouped.setdefault((user_id, att_date), []).append(rec)
+        if user_id not in emp_cache:
+            emp_cache[user_id] = get_employee_by_biometric_id(
+                user_id, company=device.company, device_name=device.name
+            )
+        per_user.setdefault(user_id, []).append(rec)
+
+    for user_id, user_recs in per_user.items():
+        state = {"cycle_start": None} if emp_cache.get(user_id) else None
+        for rec in sorted(user_recs, key=lambda r: get_datetime(r["timestamp"])):
+            ts = get_datetime(rec["timestamp"])
+            att_date = get_attendance_date_for_punch(
+                user_id, ts, device, emp_cache, shift_cache, state=state
+            )
+            grouped.setdefault((user_id, att_date), []).append(rec)
     return grouped, emp_cache
 
 
-def get_attendance_date_for_punch(user_id, timestamp, device, emp_cache, shift_cache):
+def get_attendance_date_for_punch(user_id, timestamp, device, emp_cache, shift_cache,
+                                  state=None):
     """
     Return the attendance date a punch belongs to.
 
@@ -474,6 +500,13 @@ def get_attendance_date_for_punch(user_id, timestamp, device, emp_cache, shift_c
     shift's end time (e.g. a 01:11 OUT on a 22:00-01:00 shift).  Matches the
     attribution used by attendance_processor.group_checkins_by_date so the
     IN/OUT alternation here agrees with how hours are later computed.
+
+    For a round-the-clock (24-hour) shift, pass ``state`` (a dict with a
+    "cycle_start" key) and the punches of that employee in chronological
+    order: a boundary punch then closes the open cycle (check-out) instead
+    of starting the next day, so 07:00 on 02/01 belongs to 01/01's shift.
+    Without state the punch falls back to the clock-time guess.
+
     Falls back to the raw calendar date when no employee or no shift
     assignment is found.
     """
@@ -489,6 +522,10 @@ def get_attendance_date_for_punch(user_id, timestamp, device, emp_cache, shift_c
     if cache_key not in shift_cache:
         shift_cache[cache_key] = get_shift_for_employee(emp["name"], timestamp.date()) or {}
     shift = shift_cache[cache_key]
+
+    if is_round_the_clock_shift(shift):
+        start_t = _coerce_time(shift.get("start_time"))
+        return get_round_the_clock_attendance_date(timestamp, start_t, state)
 
     if shift.get("is_night_shift"):
         start_t = _coerce_time(str(shift.get("start_time") or "17:00:00"))

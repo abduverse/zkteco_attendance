@@ -41,6 +41,22 @@ DAY_OT_END      = time(22, 0)   # 22:00
 NIGHT_OT_START  = time(22, 0)   # 22:00
 NIGHT_OT_END    = time(6, 0)    # 06:00 (next day)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Round-the-clock (24-hour) shift attribution
+# ─────────────────────────────────────────────────────────────────────────────
+
+# A punch may arrive this many minutes before the official shift start and
+# still belong to the shift starting that day (early arrival / handover).
+EARLY_ARRIVAL_BUFFER_MINUTES = 60
+
+# A 24-hour shift (Start Time == End Time) has no clock boundary between one
+# duty cycle and the next: the check-out of cycle N and the check-in of cycle
+# N+1 both fall in a band around the shift start (guards typically punch
+# anywhere between 06:30 and 07:30 for a 07:00 handover).  Punches inside
+# this band are therefore paired by ORDER — the first boundary punch opens a
+# cycle, the next one closes it — instead of by clock time.
+ROUND_THE_CLOCK_BOUNDARY_MINUTES = 60
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Holidays (public holidays from the Holiday List doctype)
@@ -246,6 +262,106 @@ def fetch_checkins(employee_list, from_date, to_date):
     return grouped
 
 
+def _shift_times(shift):
+    """Return (start_time, end_time) as datetime.time for a shift dict.
+
+    Returns (None, None) when the shift has no usable Start Time.  A blank
+    End Time (not set at all) is treated as equal to the Start Time, i.e. a
+    24-hour shift.  An explicit midnight End Time is a real time (00:00) and
+    is kept as such — a 07:00-00:00 shift is 17 hours, not 24.
+    """
+    if not shift or shift.get("start_time") in (None, ""):
+        return None, None
+    start_t = _coerce_time(shift.get("start_time"))
+    end_raw = shift.get("end_time")
+    if end_raw in (None, ""):
+        end_raw = shift.get("start_time")
+    end_t = _coerce_time(end_raw)
+    return start_t, end_t
+
+
+def is_round_the_clock_shift(shift):
+    """
+    True when the shift runs a full 24 hours (Start Time == End Time).
+
+    Such a shift must be flagged as a Night Shift to pass validation, but
+    the attribution logic keys off the equal times so it also holds for
+    records created before that rule existed.
+    """
+    start_t, end_t = _shift_times(shift)
+    return start_t is not None and end_t is not None and start_t == end_t
+
+
+def shift_start_for_punch(punch_dt, start_t,
+                          early_buffer_minutes=EARLY_ARRIVAL_BUFFER_MINUTES):
+    """
+    Datetime of the most recent shift start a punch can belong to.
+
+    A punch within the early-arrival buffer before the start time still
+    belongs to the shift starting that day; anything earlier belongs to the
+    previous day's shift.
+    """
+    boundary = datetime.combine(punch_dt.date(), start_t)
+    if punch_dt < boundary - timedelta(minutes=early_buffer_minutes):
+        boundary -= timedelta(days=1)
+    return boundary
+
+
+def get_round_the_clock_attendance_date(punch_dt, start_t, state=None):
+    """
+    Attendance date for one punch of a 24-hour shift.
+
+    A 24-hour shift's check-out lands at the same clock time as the next
+    cycle's check-in, so the punch time alone cannot tell them apart (a
+    07:00:00 punch on 02/01 could be either).  ``state`` carries the open
+    cycle across an employee's punches in chronological order:
+
+      - a punch in the boundary band around the Start Time closes the open
+        cycle (check-out) and keeps the date the cycle started on;
+      - with no open cycle, a boundary punch opens a new one (check-in);
+      - any other punch (patrol, meal, late check-out) stays in the open
+        cycle and never shifts the dates.
+
+    Without ``state`` the punch is attributed to the cycle the clock time
+    suggests: own date, or the previous date when it is well before the
+    shift start (e.g. 02:00 during an overnight duty).  Callers with the
+    full punch sequence should pass a state dict so checking out at the
+    boundary stays on the day the shift started.
+    """
+    tolerance = timedelta(minutes=ROUND_THE_CLOCK_BOUNDARY_MINUTES)
+
+    if state is None:
+        start_dt = shift_start_for_punch(punch_dt, start_t)
+        if abs(punch_dt - start_dt) <= tolerance:
+            # Ambiguous handover punch — default to the punch's own date.
+            return punch_dt.date()
+        return start_dt.date()
+
+    cycle_start = state.get("cycle_start")
+
+    if cycle_start is not None:
+        cycle_end = cycle_start + timedelta(days=1)
+        boundary = datetime.combine(punch_dt.date(), start_t)
+        near_boundary = abs(punch_dt - boundary) <= tolerance
+        if near_boundary and cycle_end - tolerance <= punch_dt <= cycle_end + tolerance:
+            # Check-out of the open cycle (even when it is a few minutes
+            # early or late) — it belongs to the shift's start date.
+            state["cycle_start"] = None
+            return cycle_start.date()
+        if punch_dt > cycle_end + tolerance:
+            # The open cycle was never closed; this punch is too far past it
+            # to be its check-out, so it starts a fresh cycle.
+            cycle_start = None
+
+    if cycle_start is None:
+        cycle_start = shift_start_for_punch(punch_dt, start_t)
+        state["cycle_start"] = cycle_start
+        return cycle_start.date()
+
+    # Punch inside the open 24-hour cycle (patrol, meal, late check-out).
+    return cycle_start.date()
+
+
 def group_checkins_by_date(checkins, shift, from_date=None, to_date=None):
     """
     Group a flat list of checkin dicts by attendance date.
@@ -257,13 +373,36 @@ def group_checkins_by_date(checkins, shift, from_date=None, to_date=None):
       A 60-minute buffer before the official shift start accommodates
       early arrivals.
 
-    After grouping, night-shift labels are re-resolved so the first
+    Round-the-clock shift logic (start_time == end_time, a full 24 hours):
+      Punch order decides whether a boundary punch is the check-out of the
+      open cycle or the check-in of a new one, so a 07:00 check-out on the
+      day after a 07:00 check-in stays with the day the shift started.
+
+    After grouping, night/24-hour labels are re-resolved so the first
     chronological punch is always IN and the last is always OUT.
 
     Returns dict: { date -> [checkin, ...] }
     """
     from_date = getdate(from_date) if from_date else None
     to_date   = getdate(to_date)   if to_date   else None
+
+    if is_round_the_clock_shift(shift):
+        daily = {}
+        start_t = _coerce_time(shift.get("start_time"))
+        state = {"cycle_start": None}
+        # Sorted so the cycle state follows the employee's actual punch order.
+        for c in sorted(checkins, key=lambda c: c["time"]):
+            att_date = get_round_the_clock_attendance_date(c["time"], start_t, state)
+            # Out-of-range punches still advance the cycle state above, but
+            # they are not returned.
+            if from_date and att_date < from_date:
+                continue
+            if to_date and att_date > to_date:
+                continue
+            daily.setdefault(att_date, []).append(c)
+        for att_date in list(daily.keys()):
+            daily[att_date] = _reresolve_night_shift_labels(daily[att_date])
+        return daily
 
     is_night = bool(shift and shift.get("is_night_shift"))
     start_t  = _coerce_time(shift.get("start_time") or "17:00:00") if is_night else None

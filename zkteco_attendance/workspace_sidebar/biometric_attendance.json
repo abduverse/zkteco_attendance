@@ -1,137 +1,164 @@
 {
- "app": "zkteco_attendance",
- "creation": "2026-09-08 15:40:28.035309",
+ "charts": [
+  {
+   "chart_name": "Check-ins (Last 7 Days)",
+   "label": "Check-ins (Last 7 Days)"
+  }
+ ],
+ "content": "[{\"type\":\"chart\",\"data\":{\"chart_name\":\"Check-ins (Last 7 Days)\",\"col\":12}},{\"type\":\"card\",\"data\":{\"card_name\":\"Setup\",\"col\":4}},{\"type\":\"card\",\"data\":{\"card_name\":\"Tools\",\"col\":4}},{\"type\":\"card\",\"data\":{\"card_name\":\"Overview\",\"col\":4}}]",
+ "creation": "2024-01-01 00:00:00",
  "docstatus": 0,
- "doctype": "Workspace Sidebar",
- "header_icon": "airplay",
+ "doctype": "Workspace",
+ "for_user": "",
+ "hide_custom": 0,
+ "icon": "",
  "idx": 0,
- "items": [
+ "label": "Biometric Attendance",
+ "links": [
   {
-   "child": 0,
-   "collapsible": 1,
-   "icon": "list",
-   "indent": 0,
-   "keep_closed": 0,
-   "label": "Home",
-   "link_to": "Biometric Attendance",
-   "link_type": "Workspace",
-   "show_arrow": 0,
-   "type": "Link"
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Setup",
+   "link_count": 4,
+   "onboard": 0,
+   "type": "Card Break"
   },
   {
-   "child": 1,
-   "collapsible": 1,
-   "icon": "airplay",
-   "indent": 0,
-   "keep_closed": 0,
-   "label": "Dashboard",
-   "link_to": "zkteco-dashboard",
-   "link_type": "Page",
-   "show_arrow": 0,
-   "type": "Link"
-  },
-  {
-   "child": 0,
-   "collapsible": 1,
-   "icon": "arrow-down-wide-narrow",
-   "indent": 0,
-   "keep_closed": 0,
+   "hidden": 0,
+   "is_query_report": 0,
    "label": "Employee",
+   "link_count": 0,
    "link_to": "Employee",
    "link_type": "DocType",
-   "show_arrow": 0,
+   "onboard": 0,
    "type": "Link"
   },
   {
-   "child": 0,
-   "collapsible": 1,
-   "icon": "app-window",
-   "indent": 0,
-   "keep_closed": 0,
+   "hidden": 0,
+   "is_query_report": 0,
    "label": "Biometric Device",
+   "link_count": 0,
    "link_to": "Biometric Device",
    "link_type": "DocType",
-   "show_arrow": 0,
+   "onboard": 0,
    "type": "Link"
   },
   {
-   "child": 0,
-   "collapsible": 1,
-   "icon": "air-vent",
-   "indent": 0,
-   "keep_closed": 0,
-   "label": "Sync Log",
-   "link_to": "Attendance Sync Log",
-   "link_type": "DocType",
-   "show_arrow": 0,
-   "type": "Link"
-  },
-  {
-   "child": 0,
-   "collapsible": 1,
-   "icon": "app-window",
-   "indent": 0,
-   "keep_closed": 0,
+   "hidden": 0,
+   "is_query_report": 0,
    "label": "Shift Type",
+   "link_count": 0,
    "link_to": "ZK Shift Type",
    "link_type": "DocType",
-   "show_arrow": 0,
+   "onboard": 0,
    "type": "Link"
   },
   {
-   "child": 0,
-   "collapsible": 1,
-   "icon": "archive-restore",
-   "indent": 0,
-   "keep_closed": 0,
+   "hidden": 0,
+   "is_query_report": 0,
    "label": "Shift Assignment",
+   "link_count": 0,
    "link_to": "ZK Shift Assignment",
    "link_type": "DocType",
-   "show_arrow": 0,
+   "onboard": 0,
    "type": "Link"
   },
   {
-   "child": 0,
-   "collapsible": 1,
-   "icon": "app-window-mac",
-   "indent": 0,
-   "keep_closed": 0,
-   "label": "Daily Checkin",
-   "link_to": "zk-daily-checkins",
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Overview",
+   "link_count": 2,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Attendance Sync Log",
+   "link_count": 0,
+   "link_to": "Attendance Sync Log",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Biometric Device Dashboard",
+   "link_count": 0,
+   "link_to": "zkteco-dashboard",
    "link_type": "Page",
-   "show_arrow": 0,
+   "onboard": 0,
    "type": "Link"
   },
   {
-   "child": 0,
-   "collapsible": 1,
-   "icon": "align-start-vertical",
-   "indent": 0,
-   "keep_closed": 0,
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Tools",
+   "link_count": 4,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
    "label": "Attendance Summary",
+   "link_count": 0,
    "link_to": "Attendance Summary",
    "link_type": "DocType",
-   "show_arrow": 0,
+   "onboard": 0,
    "type": "Link"
   },
   {
-   "child": 0,
-   "collapsible": 1,
-   "icon": "arrow-up-wide-narrow",
-   "indent": 0,
-   "keep_closed": 0,
+   "hidden": 0,
+   "is_query_report": 0,
    "label": "Manual Checkin Request",
+   "link_count": 0,
    "link_to": "Manual Checkin Request",
    "link_type": "DocType",
-   "show_arrow": 0,
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Employee Daily Checkins",
+   "link_count": 0,
+   "link_to": "zk-daily-checkins",
+   "link_type": "Page",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Import Checkins",
+   "link_count": 0,
+   "link_to": "zk-import-checkins",
+   "link_type": "Page",
+   "onboard": 0,
    "type": "Link"
   }
  ],
- "modified": "2026-09-17 10:55:26.011554",
+ "modified": "2026-10-14 16:29:49.129219",
  "modified_by": "Administrator",
  "module": "Zkteco Attendance",
  "name": "Biometric Attendance",
- "owner": "Administrator",
- "standard": 1,
+ "parent_page": "",
+ "public": 1,
+ "quick_lists": [],
+ "roles": [
+  {
+   "role": "System Manager"
+  },
+  {
+   "role": "HR Manager"
+  },
+  {
+   "role": "Biometric Device Manager"
+  }
+ ],
+ "sequence_id": 100.0,
+ "shortcuts": [],
  "title": "Biometric Attendance"
 }

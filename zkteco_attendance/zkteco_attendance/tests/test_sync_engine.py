@@ -656,6 +656,136 @@ class TestSyncEngine(unittest.TestCase):
         self.assertEqual(mock_shift.call_count, 2)
 
 
+class TestRoundTheClockShiftSync(unittest.TestCase):
+    """
+    24-hour shift (Start Time == End Time), e.g. a guard on duty 07:00 ->
+    07:00 the next day.  The check-out happens at the same clock time as the
+    next cycle's check-in, so punches are paired in chronological order and
+    guards may punch anywhere in a 06:30-07:30 handover window.
+    """
+
+    def _device(self):
+        if not frappe.db.exists("Biometric Device", "Test-ZK-Device"):
+            frappe.get_doc({
+                "doctype": "Biometric Device",
+                "device_name": "Test-ZK-Device",
+                "device_ip": "192.168.1.100",
+                "port": 4370,
+                "company": frappe.defaults.get_global_default("company"),
+            }).insert(ignore_permissions=True)
+        return frappe.get_doc("Biometric Device", "Test-ZK-Device")
+
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_employee_by_biometric_id")
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_shift_for_employee")
+    def test_attendance_date_for_punch_round_the_clock(self, mock_shift, mock_emp):
+        """Clock-time fallback: own date near handover, previous date overnight."""
+        from zkteco_attendance.zkteco_attendance.sync_engine import get_attendance_date_for_punch
+
+        mock_emp.return_value = {"name": "HR-EMP-00001", "employee_name": "Test", "company": "Acme"}
+        mock_shift.return_value = {
+            "is_night_shift": 1, "start_time": "07:00:00", "end_time": "07:00:00",
+        }
+        device = self._device()
+
+        for ts, expected in [
+            ("2026-01-01 06:35:00", "2026-01-01"),
+            ("2026-01-01 07:00:00", "2026-01-01"),
+            ("2026-01-02 02:00:00", "2026-01-01"),
+            ("2026-01-02 09:30:00", "2026-01-02"),
+        ]:
+            d = get_attendance_date_for_punch(
+                "100", get_datetime(ts), device, {}, {})
+            self.assertEqual(d, getdate(expected), ts)
+
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_employee_by_biometric_id")
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_shift_for_employee")
+    def test_checkout_on_next_day_stays_with_start_day(self, mock_shift, mock_emp):
+        """
+        07:00 IN on 01/01 + 07:00 OUT on 02/01 must share one attendance day
+        and alternate IN -> OUT (previously the OUT opened a new, invalid
+        day that held only an OUT).
+        """
+        from zkteco_attendance.zkteco_attendance.sync_engine import (
+            group_records_by_attendance_date,
+            resolve_log_types_for_day,
+        )
+
+        mock_emp.return_value = {"name": "HR-EMP-00001", "employee_name": "Test", "company": "Acme"}
+        mock_shift.return_value = {
+            "is_night_shift": 1, "start_time": "07:00:00", "end_time": "07:00:00",
+        }
+        device = self._device()
+        records = [
+            {"user_id": "100", "timestamp": get_datetime("2026-01-01 07:00:00"), "punch": 0, "uid": 1},
+            {"user_id": "100", "timestamp": get_datetime("2026-01-02 07:00:00"), "punch": 0, "uid": 2},
+            {"user_id": "100", "timestamp": get_datetime("2026-01-04 07:00:00"), "punch": 0, "uid": 3},
+            {"user_id": "100", "timestamp": get_datetime("2026-01-05 07:00:00"), "punch": 0, "uid": 4},
+        ]
+
+        grouped, _ = group_records_by_attendance_date(records, device)
+
+        self.assertEqual(sorted(k[1] for k in grouped),
+                         [getdate("2026-01-01"), getdate("2026-01-04")])
+        for att_date, uids in [("2026-01-01", [1, 2]), ("2026-01-04", [3, 4])]:
+            day_recs = sorted(grouped[("100", getdate(att_date))],
+                              key=lambda r: r["timestamp"])
+            self.assertEqual([r["uid"] for r in day_recs], uids)
+            self.assertEqual(resolve_log_types_for_day(day_recs), ["IN", "OUT"])
+
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_employee_by_biometric_id")
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_shift_for_employee")
+    def test_handover_window_punches_pair_correctly(self, mock_shift, mock_emp):
+        """Punches from 06:30 to 07:30 stay paired with the right cycle."""
+        from zkteco_attendance.zkteco_attendance.sync_engine import (
+            group_records_by_attendance_date,
+            resolve_log_types_for_day,
+        )
+
+        mock_emp.return_value = {"name": "HR-EMP-00001", "employee_name": "Test", "company": "Acme"}
+        mock_shift.return_value = {
+            "is_night_shift": 1, "start_time": "07:00:00", "end_time": "07:00:00",
+        }
+        device = self._device()
+        records = [
+            {"user_id": "100", "timestamp": get_datetime("2026-01-01 06:31:00"), "punch": 0, "uid": 1},
+            {"user_id": "100", "timestamp": get_datetime("2026-01-02 07:29:00"), "punch": 0, "uid": 2},
+            {"user_id": "100", "timestamp": get_datetime("2026-01-02 06:32:00"), "punch": 0, "uid": 3},
+            {"user_id": "100", "timestamp": get_datetime("2026-01-03 07:28:00"), "punch": 0, "uid": 4},
+        ]
+
+        grouped, _ = group_records_by_attendance_date(records, device)
+
+        self.assertEqual(sorted(k[1] for k in grouped),
+                         [getdate("2026-01-01"), getdate("2026-01-02")])
+        for att_date in (getdate("2026-01-01"), getdate("2026-01-02")):
+            day_recs = sorted(grouped[("100", att_date)], key=lambda r: r["timestamp"])
+            self.assertEqual(resolve_log_types_for_day(day_recs), ["IN", "OUT"])
+
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_employee_by_biometric_id")
+    @patch("zkteco_attendance.zkteco_attendance.sync_engine.get_shift_for_employee")
+    def test_mid_shift_punch_does_not_split_the_cycle(self, mock_shift, mock_emp):
+        """A patrol punch during the 24-hour duty stays in the same group."""
+        from zkteco_attendance.zkteco_attendance.sync_engine import (
+            group_records_by_attendance_date,
+        )
+
+        mock_emp.return_value = {"name": "HR-EMP-00001", "employee_name": "Test", "company": "Acme"}
+        mock_shift.return_value = {
+            "is_night_shift": 1, "start_time": "07:00:00", "end_time": "07:00:00",
+        }
+        device = self._device()
+        records = [
+            {"user_id": "100", "timestamp": get_datetime("2026-01-01 07:05:00"), "punch": 0, "uid": 1},
+            {"user_id": "100", "timestamp": get_datetime("2026-01-01 19:00:00"), "punch": 0, "uid": 2},
+            {"user_id": "100", "timestamp": get_datetime("2026-01-02 07:10:00"), "punch": 0, "uid": 3},
+        ]
+
+        grouped, _ = group_records_by_attendance_date(records, device)
+
+        self.assertEqual(len(grouped), 1)
+        self.assertEqual(len(grouped[("100", getdate("2026-01-01"))]), 3)
+
+
 class TestBiometricDeviceValidation(unittest.TestCase):
 
     def test_invalid_ip_rejected(self):
