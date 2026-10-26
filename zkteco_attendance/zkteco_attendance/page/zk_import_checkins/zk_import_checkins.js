@@ -146,9 +146,6 @@ Object.assign(frappe.pages["zk-import-checkins"], {
 					// re-check the loaded rows against the newly picked device
 					me.runPreview();
 				},
-				get_query() {
-					return { filters: { enable: 1 } };
-				},
 			},
 			parent: this.page.main.find("#zk-import-device"),
 			render_input: true,

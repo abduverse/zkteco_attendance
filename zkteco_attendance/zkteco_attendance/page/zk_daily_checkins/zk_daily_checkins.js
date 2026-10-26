@@ -52,6 +52,10 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                         <i class="fa fa-exclamation-triangle" style="color:var(--orange-500);"></i> ${__("Check invalids")}
                     </button>
                     &nbsp;
+                    <button class="btn btn-default btn-sm" id="zk-lunchdev-btn" title="${__("Show employees with more lunch deviation days than their shift's threshold in the selected range")}">
+                        <i class="fa fa-clock-o" style="color:var(--orange-500);"></i> ${__("Check lunch deviation")}
+                    </button>
+                    &nbsp;
                     <button class="btn btn-default btn-sm" id="zk-pull-btn" title="${__("Pull attendance logs from the selected biometric device (or all active devices) and create Employee Checkin records")}">
                         <i class="fa fa-refresh"></i> ${__("Pull checkins")}
                     </button>
@@ -773,6 +777,130 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
         dlg.show();
     }
 
+    // Check lunch deviation — popup listing employees with more deviation days
+    // than their shift's threshold, with the counted days comma separated.
+    $filterWrap.find("#zk-lunchdev-btn").on("click", function () {
+        const fd = from_ctrl.get_value();
+        const td = to_ctrl.get_value();
+        if (!fd || !td) {
+            frappe.msgprint(__("Please set both From Date and To Date."));
+            return;
+        }
+
+        frappe.call({
+            method: "zkteco_attendance.zkteco_attendance.page.zk_daily_checkins.zk_daily_checkins.get_lunch_deviation_flags",
+            args: {
+                attendance_summary: state.attendance_summary || null,
+                from_date:          fd,
+                to_date:            td,
+                employee_list:      state.employee_list.length ? JSON.stringify(state.employee_list) : null,
+                biometric_device:   state.biometric_device || null,
+                filter_employee:    state.filter_employee || null,
+                filter_project:     state.filter_project || null,
+            },
+            freeze: true,
+            freeze_message: __("Checking lunch deviation…"),
+            callback(r) {
+                show_lunch_deviation_dialog(r.message || {});
+            },
+        });
+    });
+
+    function show_lunch_deviation_dialog(payload) {
+        const flagged   = payload.flagged || [];
+        const fromDate  = payload.from_date ? frappe.datetime.str_to_user(payload.from_date) : "";
+        const toDate    = payload.to_date   ? frappe.datetime.str_to_user(payload.to_date)   : "";
+        const periodTxt = fromDate && toDate && fromDate !== toDate ? `${fromDate} — ${toDate}` : (fromDate || "");
+
+        if (!flagged.length) {
+            frappe.msgprint({
+                title: __("Check Lunch Deviation"),
+                message: periodTxt
+                    ? __("No employee exceeds their lunch deviation threshold for {0}.", [periodTxt])
+                    : __("No employee exceeds their lunch deviation threshold."),
+                indicator: "green",
+            });
+            return;
+        }
+
+        const rows = flagged.map(emp => `
+            <tr>
+                <td style="border:1px solid var(--border-color);padding:6px 10px;">
+                    <a href="/app/employee/${encodeURIComponent(emp.employee)}">${frappe.utils.escape_html(emp.employee_name || emp.employee)}</a>
+                    <div class="text-muted" style="font-size:0.75rem;">${frappe.utils.escape_html(emp.employee || "")}</div>
+                </td>
+                <td style="border:1px solid var(--border-color);padding:6px 10px;">${frappe.utils.escape_html(emp.department || "—")}</td>
+                <td style="border:1px solid var(--border-color);padding:6px 10px;">${frappe.utils.escape_html(emp.shift_type || "—")}</td>
+                <td style="border:1px solid var(--border-color);padding:6px 10px;text-align:center;">
+                    <span class="indicator-pill orange">${emp.deviation_days}</span>
+                    <div class="text-muted" style="font-size:0.72rem;">${__("threshold {0}", [emp.threshold])}</div>
+                </td>
+                <td style="border:1px solid var(--border-color);padding:6px 10px;">
+                    ${(emp.deviation_dates || []).map(dt =>
+                        `<span style="display:inline-block;border:1px solid #a05a12;border-radius:4px;padding:1px 6px;margin:2px;font-size:0.75rem;background:#ffe0b2;color:#8a4b08;">${frappe.datetime.str_to_user(dt)}</span>`
+                    ).join(`<span class="text-muted">, </span>`)}
+                </td>
+            </tr>`).join("");
+
+        const tableHtml = `
+            <div class="text-muted" style="margin-bottom:8px;">
+                ${periodTxt ? `<b>${periodTxt}</b> &nbsp;|&nbsp;` : ""}
+                ${__("{0} employee(s) above their lunch deviation threshold, of {1} checked.", [flagged.length, payload.total_employees_checked || 0])}
+            </div>
+            <div style="max-height:55vh;overflow:auto;">
+                <table class="table table-bordered" style="margin-bottom:0; border:1px solid #b0b0b0; border-radius:4px;">
+                    <thead>
+                        <tr style="background:var(--table-bg,var(--card-bg));">
+                            <th style="width:26%;">${__("Employee")}</th>
+                            <th style="width:18%;">${__("Department")}</th>
+                            <th style="width:14%;">${__("Shift")}</th>
+                            <th style="width:12%; text-align:center;">${__("Deviation Days")}</th>
+                            <th>${__("Deviation Dates")}</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>`;
+
+        const dlg = new frappe.ui.Dialog({
+            title: __("Employees Flagged for Lunch Deviation"),
+            size: "extra-large",
+            fields: [
+                { fieldtype: "HTML", fieldname: "lunch_deviation_html", options: tableHtml },
+            ],
+            primary_action_label: __("Close"),
+            primary_action: () => dlg.hide(),
+        });
+
+        // Download Excel — server re-runs the same query with the same filters
+        // and streams back an .xlsx workbook of the listed employees.
+        dlg.$wrapper.find(".modal-header .modal-actions").prepend(`
+            <button class="btn btn-default btn-sm zk-lunchdev-excel-btn"
+                    title="${__("Download the lunch deviation list as an Excel workbook")}">
+                <i class="fa fa-file-excel-o"></i> ${__("Download Excel")}
+            </button>`);
+        dlg.$wrapper.find(".zk-lunchdev-excel-btn").on("click", function () {
+            const query_payload = {
+                from_date:          payload.from_date || "",
+                to_date:            payload.to_date   || "",
+                attendance_summary: state.attendance_summary || "",
+                employee_list:      state.employee_list.length ? JSON.stringify(state.employee_list) : "",
+                biometric_device:   state.biometric_device || "",
+                filter_employee:    state.filter_employee || "",
+                filter_project:     state.filter_project || "",
+            };
+            const query = Object.keys(query_payload)
+                .filter(k => query_payload[k])
+                .map(k => encodeURIComponent(k) + "=" + encodeURIComponent(query_payload[k]))
+                .join("&");
+            const url = "/api/method/zkteco_attendance.zkteco_attendance.page.zk_daily_checkins.zk_daily_checkins.download_lunch_deviation_excel?" + query;
+            frappe.show_alert({ message: __("Preparing Excel download…"), indicator: "blue" }, 4);
+            window.location.href = url;
+        });
+
+        dlg.show();
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────
     function render_empty_state(msg) {
         $body.html(`<div class="text-muted text-center" style="padding:60px 0;">
@@ -799,16 +927,38 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
         return chips.length ? chips.join(" ") : `<span class="text-muted">—</span>`;
     }
 
-    // Late entry / early exit badges (beyond the shift's grace periods)
+    // Late entry / early exit badges (beyond the shift's grace periods).
+    // Each title breaks the total into its two parts: late entry = shift
+    // start + lunch end, early exit = lunch start + shift end.
     function grace_badges(d) {
         const badges = [];
         if (d.is_late) {
-            badges.push(`<span class="zk-grace-badge" title="${__("Late entry")}: ${d.late_minutes} ${__("min beyond grace")}" style="border:1px solid #b07a2a;background-color:#ffd98b;color:#7a5200;border-radius:4px;padding:1px 4px;margin-left:4px;font-size:0.7rem;">${__("L-EN")}</span>`);
+            const late_title = `${__("Late entry")}: ${d.late_minutes} ${__("min beyond grace")} (${__("Shift start")}: ${d.late_shift_minutes || 0} ${__("min")} + ${__("Lunch end")}: ${d.late_lunch_minutes || 0} ${__("min")})`;
+            badges.push(`<span class="zk-grace-badge" title="${late_title}" style="border:1px solid #b07a2a;background-color:#ffd98b;color:#7a5200;border-radius:4px;padding:1px 4px;margin-left:4px;font-size:0.7rem;">${__("L-EN")}</span>`);
         }
         if (d.is_early_exit) {
-            badges.push(`<span class="zk-grace-badge" title="${__("Early exit")}: ${d.early_minutes} ${__("min beyond grace")}" style="border:1px solid #2ab06f;background-color:#ffd98b;color:#7a5200;border-radius:4px;padding:1px 4px;margin-left:4px;font-size:0.7rem;">${__("E-EX")}</span>`);
+            const early_title = `${__("Early exit")}: ${d.early_minutes} ${__("min beyond grace")} (${__("Lunch start")}: ${d.early_lunch_minutes || 0} ${__("min")} + ${__("Shift end")}: ${d.early_shift_minutes || 0} ${__("min")})`;
+            badges.push(`<span class="zk-grace-badge" title="${early_title}" style="border:1px solid #2ab06f;background-color:#ffd98b;color:#7a5200;border-radius:4px;padding:1px 4px;margin-left:4px;font-size:0.7rem;">${__("E-EX")}</span>`);
         }
         return badges.join("");
+    }
+
+    // Lunch deviation — minutes away from the shift's scheduled lunch
+    // start/end. Highlighted when the day exceeds the allowed deviation.
+    // Nothing is measured when the shift disables lunch deviation.
+    function lunch_deviation_cell(d, enabled) {
+        if (!enabled) {
+            return `<span class="text-muted" title="${__("Lunch deviation is disabled for this shift")}">—</span>`;
+        }
+        const mins = Number(d.lunch_deviation || 0);
+        if (!mins) {
+            return `<span class="text-muted">—</span>`;
+        }
+        const label = `${mins % 1 ? mins.toFixed(1) : mins}`;
+        if (d.is_lunch_deviation) {
+            return `<span class="zk-grace-badge" title="${__("Lunch deviation beyond the allowed minutes")}" style="border:1px solid #a05a12;background-color:#ffe0b2;color:#8a4b08;border-radius:4px;padding:1px 4px;font-size:0.72rem;font-weight:600;">${label}</span>`;
+        }
+        return `<span>${label}</span>`;
     }
 
     function render_checkin_chips(checkins, emp, date, summary_name) {
@@ -897,6 +1047,7 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
     }
 
     function render_employee_table(emp, summary_name) {
+        const lunchDevEnabled = !!emp.lunch_deviation_enabled;
         const rows = emp.days.map(d => {
             const dayMark = d.is_holiday
                 ? `<span class="zk-day-mark zk-day-holiday" title="${__("Public Holiday")}">HOL</span>`
@@ -910,8 +1061,9 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                     <td style="border: 1px solid #385068;">${frappe.datetime.str_to_user(d.date)}${dayMark}</td>
                     <td style="border: 1px solid #385068;">${__(d.weekday)}</td>
                     <td style="border: 1px solid #385068;"><span class="indicator-pill ${status_color(d.status)}">${__(d.status)}</span><br>${grace_badges(d)}</td>
-                    <td class="text-right" style="border: 1px solid #385068;">${(d.hours||0).toFixed(2)}</td>
-                    <td class="text-right" style="border: 1px solid #385068;">${format_hours_hhmm(d.hours)}</td>
+                    <td class="text-right" style="border: 1px solid #385068;">${lunch_deviation_cell(d, lunchDevEnabled)}</td>
+                    <td class="text-right" style="border: 1px solid #385068;">${(d.hours||0).toFixed(2)}${'('}${format_hours_hhmm(d.hours)}${')'}</td>
+                    
                     <td class="text-right ${d.overtime_hours ? 'text-warning' : ''}" style="border: 1px solid #385068;">${ot_cell(d)}</td>
                     <td style="border: 1px solid #385068;">${render_checkin_chips(d.checkins, emp.employee, d.date, summary_name)}</td>
                 </tr>`;
@@ -924,8 +1076,8 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                         <th style="width:120px; border: 1px solid #385068; background-color: #8bc2f8;">${__("Date")}</th>
                         <th style="width:90px; border: 1px solid #385068; background-color: #8bc2f8;">${__("Day")}</th>
                         <th style="width:120px; border: 1px solid #385068; background-color: #8bc2f8;">${__("Status")}</th>
+                        <th style="width:90px; border: 1px solid #385068; background-color: #8bc2f8;" class="text-right">${__("Lunch Dev (min)")}</th>
                         <th style="width:70px; border: 1px solid #385068; background-color: #8bc2f8;" class="text-right">${__("Hours")}</th>
-                        <th style="width:90px; border: 1px solid #385068; background-color: #8bc2f8;" class="text-right">${__("Formatted Hours")}</th>
                         <th style="width:160px; border: 1px solid #385068; background-color: #8bc2f8;" class="text-right">${__("OT Breakdown")}</th>
                         <th style="border: 1px solid #385068; background-color: #8bc2f8;">${__("Check-ins")}</th>
                     </tr>
@@ -948,6 +1100,7 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                     <b>${frappe.datetime.str_to_user(data.to_date)}</b>
                     ${data.company ? "&nbsp;|&nbsp;" + frappe.utils.escape_html(data.company) : ""}
                     &nbsp;|&nbsp; ${__("{0} employee(s)", [data.employees.length])}
+                    &nbsp;|&nbsp; ${__("{0} possible working days", [])}
                     ${data.attendance_summary
                         ? `&nbsp;|&nbsp; <a href="/app/attendance-summary/${encodeURIComponent(data.attendance_summary)}">${frappe.utils.escape_html(data.attendance_summary)}</a>`
                         : ""}
@@ -959,6 +1112,7 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                     <span class="zk-ot-chip zk-ot-holiday">H: ${__("Holiday OT")}</span>
                     <span class="zk-ot-chip zk-ot-late">L-EN: ${__("Late Entry")}</span>
                     <span class="zk-ot-chip zk-ot-early">E-EX: ${__("Early Exit")}</span>
+                    <span class="zk-ot-chip zk-ot-late">LD: ${__("Lunch Deviation (min)")}</span>
                     <span class="zk-ot-chip zk-ot-day">WD: ${__("Working Days")}</span>
                     <span class="zk-ot-chip zk-ot-holiday">AD: ${__("Absent Days")}</span>
                     <span class="zk-ot-chip zk-ot-night">○: ${__("Ignore Button")}</span>
@@ -992,6 +1146,12 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                 <span class="zk-ot-chip zk-ot-holiday" title="${__("Absent Days")}" style="border: 1px solid #683848; background-color: #f88bc5; border-radius: 4px; padding: 2px 4px;">
                     ${__("AD")}: ${absentDays % 1 ? absentDays.toFixed(1) : absentDays}
                 </span>`;
+            // Employee flag: more flagged lunch days than the shift's threshold
+            const lunchDeviationLabel = emp.lunch_deviation_flagged
+                ? `<span class="zk-ot-chip" title="${__("Lunch deviation on {0} day(s) exceeds the threshold of {1}", [emp.lunch_deviation_days, emp.lunch_deviation_threshold])}" style="border: 1px solid #a05a12; background-color: #ffe0b2; color: #8a4b08; border-radius: 4px; padding: 2px 4px; margin-right: 8px;">
+                       ${__("LD FLAG")}: ${emp.lunch_deviation_days} ${__("days")}
+                   </span>`
+                : "";
             const otLabel  = totalOt
                 ? `<span class="text-warning" style="margin-right:10px;" title="${__("Day OT")}: ${dayOt.toFixed(2)}h | ${__("Night OT")}: ${nightOt.toFixed(2)}h | ${__("Weekend OT")}: ${weekendOt.toFixed(2)}h | ${__("Holiday OT")}: ${holidayOt.toFixed(2)}h">
                        ${__("OT")}: ${totalOt.toFixed(2)}h
@@ -1017,7 +1177,7 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                             <span class="text-muted" style="margin-left:8px; border:1px solid #e4e3e3; border-radius:var(--border-radius); padding:2px 4px;"><b>Emp ID:</b> ${frappe.utils.escape_html(emp.employee)}</span>
                             <span class="text-muted" style="margin-left:8px; border:1px solid #e4e3e3; border-radius:var(--border-radius); padding:2px 4px;">${deviceInfo.join("")}</span>
                         </div>
-                        <div class="text-muted">${statsLabel}${otLabel}<i class="fa fa-chevron-${isOpen?"up":"down"}"></i></div>
+                        <div class="text-muted">${statsLabel}${lunchDeviationLabel}${otLabel}<i class="fa fa-chevron-${isOpen?"up":"down"}"></i></div>
                     </div>
                     <div class="zk-emp-card-body" style="display:${isOpen?"block":"none"};padding-top:4px;">
                         ${render_employee_table(emp, data.attendance_summary)}

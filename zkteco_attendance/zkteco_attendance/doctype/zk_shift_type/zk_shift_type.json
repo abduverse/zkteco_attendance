@@ -26,6 +26,14 @@
         "column_grace",
         "late_entry_grace",
         "early_exit_grace",
+        "section_lunch_deviation",
+        "enable_lunch_deviation",
+        "lunch_start_time",
+        "lunch_end_time",
+        "late_compensate_threshold",
+        "column_break_lunch_dev",
+        "lunch_deviation_minutes",
+        "lunch_deviation_threshold",
         "section_overtime",
         "enable_overtime",
         "overtime_calculation_method",
@@ -158,7 +166,7 @@
             "fieldname": "lunch_break_hours",
             "fieldtype": "Float",
             "label": "Lunch Break (hours)",
-            "default": "0",
+            "default": "1",
             "depends_on": "eval:doc.working_hours_method=='First IN - Last OUT'",
             "description": "Hours to deduct from total span when using First IN - Last OUT method. Example: 8:00-17:00 = 9h span, minus 1h lunch = 8h working hours."
         },
@@ -186,6 +194,65 @@
             "fieldtype": "Int",
             "label": "Early Exit Grace (minutes)",
             "default": "0"
+        },
+        {
+            "fieldname": "section_lunch_deviation",
+            "fieldtype": "Section Break",
+            "label": "Lunch Deviation"
+        },
+        {
+            "fieldname": "enable_lunch_deviation",
+            "fieldtype": "Check",
+            "label": "Enable Lunch Deviation",
+            "default": "1",
+            "description": "Measure how far the employee's lunch check-ins are from the scheduled lunch times, and flag the employee when the flagged days exceed the threshold."
+        },
+        {
+            "fieldname": "lunch_start_time",
+            "fieldtype": "Time",
+            "label": "Lunch Start Time",
+            "mandatory_depends_on": "enable_lunch_deviation",
+            "depends_on": "enable_lunch_deviation",
+            "default": "12:00:00",
+            "description": "Scheduled time the employee leaves for lunch (e.g. 12:00). The lunch OUT check-in is matched to this time to measure deviation."
+        },
+        {
+            "fieldname": "lunch_end_time",
+            "fieldtype": "Time",
+            "label": "Lunch End Time",
+            "mandatory_depends_on": "enable_lunch_deviation",
+            "depends_on": "enable_lunch_deviation",
+            "default": "13:00:00",
+            "description": "Scheduled time the employee returns from lunch (e.g. 13:00). The lunch IN check-in is matched to this time to measure deviation."
+        },
+        {
+            "fieldname": "late_compensate_threshold",
+            "fieldtype": "Int",
+            "label": "Threshold for Late/Compensate",
+            "default": "0",
+            "depends_on": "enable_lunch_deviation",
+            "description": "Grace minutes for the lunch late/early decision. Minutes after Lunch End Time beyond this threshold count as late entry minutes, and minutes before Lunch Start Time beyond it count as early exit minutes. Example: 10 with a 12:00 Lunch Start Time accepts an 11:57 lunch check-out."
+        },
+        {
+            "fieldname": "column_break_lunch_dev",
+            "fieldtype": "Column Break",
+            "depends_on": "enable_lunch_deviation"
+        },
+        {
+            "fieldname": "lunch_deviation_minutes",
+            "fieldtype": "Int",
+            "label": "Lunch Deviation Allowed (minutes)",
+            "default": "0",
+            "depends_on": "enable_lunch_deviation",
+            "description": "Allowed deviation per day. A day whose lunch deviation exceeds this is flagged and counted. Example: 10 means up to 10 minutes away from the scheduled lunch times is accepted."
+        },
+        {
+            "fieldname": "lunch_deviation_threshold",
+            "fieldtype": "Int",
+            "label": "Lunch Deviation Threshold (days)",
+            "default": "5",
+            "depends_on": "enable_lunch_deviation",
+            "description": "Number of flagged days (days exceeding the allowed deviation) after which the employee is flagged on the Employee Daily Check-ins page."
         },
         {
             "fieldname": "section_overtime",
@@ -315,7 +382,7 @@
         }
     ],
     "links": [],
-    "modified": "2026-10-01 00:00:00.000000",
+    "modified": "2026-10-26 00:00:00.000000",
     "modified_by": "Administrator",
     "owner": "Administrator",
     "module": "Zkteco Attendance",

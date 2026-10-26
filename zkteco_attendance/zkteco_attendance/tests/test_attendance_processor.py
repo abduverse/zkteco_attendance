@@ -45,6 +45,7 @@ def _day_shift(**overrides):
         "standard_start_time": "08:00:00",
         "night_ot_start_time": "22:00:00",
         "night_ot_end_time": "06:00:00",
+        "enable_lunch_deviation": 1,
     }
     shift.update(overrides)
     return shift
@@ -1683,6 +1684,253 @@ class TestRoundTheClockShift(unittest.TestCase):
         self.assertNotIn("invalid checkin", result["remarks"])
         # Two completed 24-hour duties = 48 hours on the two check-in days.
         self.assertAlmostEqual(result["total_working_hours"], 48.0, places=2)
+
+
+class TestLunchDeviation(unittest.TestCase):
+    """Lunch deviation: minutes away from the shift's scheduled lunch window."""
+
+    def _shift(self, **overrides):
+        settings = {"lunch_start_time": "12:00:00", "lunch_end_time": "13:00:00",
+                    "lunch_deviation_minutes": 5, "lunch_deviation_threshold": 5}
+        settings.update(overrides)
+        return _day_shift(**settings)
+
+    def _day(self, day, lunch_out="11:50:00", lunch_in="13:15:00"):
+        return [
+            _mk_checkin("C1", day + " 08:00:00", "IN"),
+            _mk_checkin("C2", day + " " + lunch_out, "OUT"),
+            _mk_checkin("C3", day + " " + lunch_in, "IN"),
+            _mk_checkin("C4", day + " 17:00:00", "OUT"),
+        ]
+
+    def test_deviation_sums_minutes_before_and_after(self):
+        """10 min early for lunch + 15 min late back = 25 minutes."""
+        from zkteco_attendance.zkteco_attendance.attendance_processor import get_lunch_deviation
+
+        result = get_lunch_deviation(self._day("2026-08-10"), self._shift(),
+                                     get_datetime("2026-08-10").date())
+
+        self.assertAlmostEqual(result["deviation_minutes"], 25.0, places=1)
+        self.assertEqual(result["out_time"], "11:50:00")
+        self.assertEqual(result["in_time"], "13:15:00")
+
+    def test_no_deviation_without_a_lunch_punch_pair(self):
+        """A plain IN/OUT day has no lunch punches, so no deviation."""
+        from zkteco_attendance.zkteco_attendance.attendance_processor import get_lunch_deviation
+
+        checkins = [
+            _mk_checkin("C1", "2026-08-10 08:00:00", "IN"),
+            _mk_checkin("C2", "2026-08-10 17:00:00", "OUT"),
+        ]
+        result = get_lunch_deviation(checkins, self._shift(),
+                                     get_datetime("2026-08-10").date())
+
+        self.assertEqual(result["deviation_minutes"], 0.0)
+
+    def test_no_deviation_without_a_lunch_window(self):
+        from zkteco_attendance.zkteco_attendance.attendance_processor import get_lunch_deviation
+
+        shift = _day_shift()
+        result = get_lunch_deviation(self._day("2026-08-10"), shift,
+                                     get_datetime("2026-08-10").date())
+
+        self.assertEqual(result["deviation_minutes"], 0.0)
+
+    def test_classify_day_flags_deviation_beyond_allowed_minutes(self):
+        from zkteco_attendance.zkteco_attendance.attendance_processor import classify_day
+
+        work_date = get_datetime("2026-08-10").date()
+        checkins = self._day("2026-08-10")
+
+        over = classify_day(checkins, self._shift(lunch_deviation_minutes=20),
+                            "Mark as Invalid", work_date=work_date)
+        self.assertAlmostEqual(over["lunch_deviation"], 25.0, places=1)
+        self.assertTrue(over["is_lunch_deviation"])
+
+        within = classify_day(checkins, self._shift(lunch_deviation_minutes=25),
+                               "Mark as Invalid", work_date=work_date)
+        self.assertFalse(within["is_lunch_deviation"])
+
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_holidays_in_range")
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_shift_for_employee")
+    def test_process_employee_counts_days_and_flags_above_threshold(
+            self, mock_shift, mock_holidays):
+        from zkteco_attendance.zkteco_attendance.attendance_processor import process_employee
+
+        mock_holidays.return_value = {}
+        checkins = self._day("2026-08-10") + self._day("2026-08-11")
+
+        mock_shift.return_value = self._shift(lunch_deviation_threshold=1)
+        flagged = process_employee(
+            employee="EMP-LUNCH", from_date="2026-08-10", to_date="2026-08-11",
+            checkin_list=checkins, default_shift_name=None,
+            doc_missing_action="Mark as Invalid",
+        )
+        self.assertEqual(flagged["lunch_deviation_days"], 2)
+        self.assertAlmostEqual(flagged["lunch_deviation_minutes"], 50.0, places=1)
+        self.assertTrue(flagged["lunch_deviation_flagged"])
+        self.assertEqual(flagged["invalid_days"], 0)
+
+        mock_shift.return_value = self._shift(lunch_deviation_threshold=5)
+        not_flagged = process_employee(
+            employee="EMP-LUNCH", from_date="2026-08-10", to_date="2026-08-11",
+            checkin_list=checkins, default_shift_name=None,
+            doc_missing_action="Mark as Invalid",
+        )
+        self.assertEqual(not_flagged["lunch_deviation_days"], 2)
+        self.assertFalse(not_flagged["lunch_deviation_flagged"])
+
+    def test_disabled_shift_measures_no_deviation(self):
+        """With Enable Lunch Deviation off, the day is neither measured nor flagged."""
+        from zkteco_attendance.zkteco_attendance.attendance_processor import (
+            classify_day,
+            get_lunch_deviation,
+        )
+
+        shift = self._shift(enable_lunch_deviation=0)
+        work_date = get_datetime("2026-08-10").date()
+        checkins = self._day("2026-08-10")
+
+        deviation = get_lunch_deviation(checkins, shift, work_date)
+        self.assertEqual(deviation["deviation_minutes"], 0.0)
+
+        day = classify_day(checkins, shift, "Mark as Invalid", work_date=work_date)
+        self.assertEqual(day["lunch_deviation"], 0.0)
+        self.assertFalse(day["is_lunch_deviation"])
+
+    def test_late_entry_adds_minutes_past_lunch_end(self):
+        """Returning past Lunch End + threshold adds to the late entry minutes."""
+        from zkteco_attendance.zkteco_attendance.attendance_processor import classify_day
+
+        shift = self._shift(late_compensate_threshold=10)
+        checkins = [
+            _mk_checkin("C1", "2026-08-10 08:00:00", "IN"),
+            _mk_checkin("C2", "2026-08-10 12:00:00", "OUT"),
+            _mk_checkin("C3", "2026-08-10 13:15:00", "IN"),  # 15 min past 13:00
+            _mk_checkin("C4", "2026-08-10 17:00:00", "OUT"),
+        ]
+        result = classify_day(checkins, shift, "Mark as Invalid",
+                              work_date=get_datetime("2026-08-10").date())
+
+        self.assertAlmostEqual(result["late_shift_minutes"], 0.0, places=1)
+        self.assertAlmostEqual(result["late_lunch_minutes"], 5.0, places=1)
+        self.assertAlmostEqual(result["late_minutes"], 5.0, places=1)
+        self.assertTrue(result["is_late"])
+        self.assertFalse(result["is_early_exit"])
+
+    def test_lunch_checkout_within_threshold_is_not_early(self):
+        """A 11:57 lunch check-out is accepted with a 12:00 start and a 10 min threshold."""
+        from zkteco_attendance.zkteco_attendance.attendance_processor import classify_day
+
+        checkins = [
+            _mk_checkin("C1", "2026-08-10 08:00:00", "IN"),
+            _mk_checkin("C2", "2026-08-10 11:57:00", "OUT"),
+            _mk_checkin("C3", "2026-08-10 13:00:00", "IN"),
+            _mk_checkin("C4", "2026-08-10 17:00:00", "OUT"),
+        ]
+        work_date = get_datetime("2026-08-10").date()
+
+        within = classify_day(checkins, self._shift(late_compensate_threshold=10),
+                              "Mark as Invalid", work_date=work_date)
+        self.assertAlmostEqual(within["early_lunch_minutes"], 0.0, places=1)
+        self.assertAlmostEqual(within["early_minutes"], 0.0, places=1)
+        self.assertFalse(within["is_early_exit"])
+
+        # With no threshold the same punch is 3 minutes before the lunch start.
+        strict = classify_day(checkins, self._shift(late_compensate_threshold=0),
+                              "Mark as Invalid", work_date=work_date)
+        self.assertAlmostEqual(strict["early_lunch_minutes"], 3.0, places=1)
+        self.assertAlmostEqual(strict["early_minutes"], 3.0, places=1)
+        self.assertTrue(strict["is_early_exit"])
+
+    def test_early_exit_adds_minutes_before_lunch_start(self):
+        """Leaving early for lunch and before the shift end both count as early."""
+        from zkteco_attendance.zkteco_attendance.attendance_processor import classify_day
+
+        shift = self._shift(late_compensate_threshold=10, early_exit_grace=0)
+        checkins = [
+            _mk_checkin("C1", "2026-08-10 08:00:00", "IN"),
+            _mk_checkin("C2", "2026-08-10 11:40:00", "OUT"),  # 20 min before 12:00
+            _mk_checkin("C3", "2026-08-10 13:00:00", "IN"),
+            _mk_checkin("C4", "2026-08-10 16:45:00", "OUT"),  # 15 min before 17:00
+        ]
+        result = classify_day(checkins, shift, "Mark as Invalid",
+                              work_date=get_datetime("2026-08-10").date())
+
+        self.assertAlmostEqual(result["early_lunch_minutes"], 10.0, places=1)
+        self.assertAlmostEqual(result["early_shift_minutes"], 15.0, places=1)
+        self.assertAlmostEqual(result["early_minutes"], 25.0, places=1)
+        self.assertTrue(result["is_early_exit"])
+        self.assertFalse(result["is_late"])
+
+    def test_lunch_parts_ignored_when_deviation_disabled(self):
+        """With Enable Lunch Deviation off only the shift graces are measured."""
+        from zkteco_attendance.zkteco_attendance.attendance_processor import classify_day
+
+        shift = self._shift(late_compensate_threshold=10, enable_lunch_deviation=0)
+        checkins = [
+            _mk_checkin("C1", "2026-08-10 08:00:00", "IN"),
+            _mk_checkin("C2", "2026-08-10 11:40:00", "OUT"),
+            _mk_checkin("C3", "2026-08-10 13:15:00", "IN"),
+            _mk_checkin("C4", "2026-08-10 17:00:00", "OUT"),
+        ]
+        result = classify_day(checkins, shift, "Mark as Invalid",
+                              work_date=get_datetime("2026-08-10").date())
+
+        self.assertAlmostEqual(result["late_lunch_minutes"], 0.0, places=1)
+        self.assertAlmostEqual(result["early_lunch_minutes"], 0.0, places=1)
+        self.assertAlmostEqual(result["late_minutes"], 0.0, places=1)
+        self.assertAlmostEqual(result["early_minutes"], 0.0, places=1)
+
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_holidays_in_range")
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_shift_for_employee")
+    def test_daily_breakdown_exposes_both_late_and_early_parts(
+            self, mock_shift, mock_holidays):
+        """The dashboard payload carries the shift and lunch parts separately."""
+        from zkteco_attendance.zkteco_attendance.attendance_processor import (
+            get_employee_daily_breakdown,
+        )
+
+        mock_holidays.return_value = {}
+        mock_shift.return_value = self._shift(late_compensate_threshold=10,
+                                              early_exit_grace=0)
+        checkins = [
+            _mk_checkin("C1", "2026-08-10 08:00:00", "IN"),
+            _mk_checkin("C2", "2026-08-10 11:40:00", "OUT"),
+            _mk_checkin("C3", "2026-08-10 13:15:00", "IN"),
+            _mk_checkin("C4", "2026-08-10 17:00:00", "OUT"),
+        ]
+        day = get_employee_daily_breakdown(
+            employee="EMP-LUNCH", from_date="2026-08-10", to_date="2026-08-10",
+            checkin_list=checkins, default_shift_name=None,
+            doc_missing_action="Mark as Invalid",
+        )[0]
+
+        self.assertAlmostEqual(day["late_shift_minutes"], 0.0, places=1)
+        self.assertAlmostEqual(day["late_lunch_minutes"], 5.0, places=1)
+        self.assertAlmostEqual(day["early_lunch_minutes"], 10.0, places=1)
+        self.assertAlmostEqual(day["early_shift_minutes"], 0.0, places=1)
+        self.assertAlmostEqual(day["late_minutes"], 5.0, places=1)
+        self.assertAlmostEqual(day["early_minutes"], 10.0, places=1)
+
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_holidays_in_range")
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_shift_for_employee")
+    def test_disabled_shift_is_not_counted_or_flagged(self, mock_shift, mock_holidays):
+        from zkteco_attendance.zkteco_attendance.attendance_processor import process_employee
+
+        mock_holidays.return_value = {}
+        mock_shift.return_value = self._shift(enable_lunch_deviation=0,
+                                              lunch_deviation_threshold=1)
+        result = process_employee(
+            employee="EMP-LUNCH", from_date="2026-08-10", to_date="2026-08-11",
+            checkin_list=self._day("2026-08-10") + self._day("2026-08-11"),
+            default_shift_name=None,
+            doc_missing_action="Mark as Invalid",
+        )
+
+        self.assertEqual(result["lunch_deviation_days"], 0)
+        self.assertEqual(result["lunch_deviation_minutes"], 0.0)
+        self.assertFalse(result["lunch_deviation_flagged"])
 
 
 if __name__ == "__main__":

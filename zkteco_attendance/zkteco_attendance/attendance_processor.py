@@ -12,7 +12,10 @@ Handles:
 - Missing checkin scenarios
 - Absent hours calculation
 - Grace periods: Late Entry / Early Exit minutes beyond the shift's grace
-  are deducted from the day's hours (can drop Present -> Half Day -> Absent)
+  are deducted from the day's hours (can drop Present -> Half Day -> Absent).
+  With Lunch Deviation enabled, late entry also counts the minutes past
+  Lunch End Time and early exit the minutes before Lunch Start Time, both
+  beyond the shift's Threshold for Late/Compensate.
 - Overtime calculation split into four explicit categories, honoring the
   shift's Overtime Calculation Method:
     After Standard Hours - Day OT in 06:00-22:00 beyond the daily limit,
@@ -161,6 +164,9 @@ SHIFT_FIELDS = [
     "name", "start_time", "end_time", "is_night_shift",
     "full_day_hours", "half_day_hours", "standard_working_hours",
     "working_hours_method", "lunch_break_hours", "missing_checkin_action",
+    "enable_lunch_deviation", "lunch_start_time", "lunch_end_time",
+    "late_compensate_threshold",
+    "lunch_deviation_minutes", "lunch_deviation_threshold",
     "late_entry_grace", "early_exit_grace",
     "saturday_mode", "saturday_end_time", "saturday_half_day_hours",
     "enable_overtime", "overtime_calculation_method",
@@ -508,20 +514,35 @@ def _shift_window_datetimes(shift, work_date):
 
 def _late_early_minutes(day_checkins, shift, work_date):
     """
-    Return (late_minutes, early_minutes) for a day's punches, per the shift's
-    Late Entry Grace / Early Exit Grace (minutes).
+    Late entry / early exit minutes for a day's punches, split into the two
+    parts each total is made of.
 
-    - late_minutes:  first IN after (Start Time + Late Entry Grace)
-    - early_minutes: last OUT before (End Time - Early Exit Grace)
+    Shift part — always applied:
+      - late_shift_minutes:  first IN after (Start Time + Late Entry Grace)
+      - early_shift_minutes: last OUT before (End Time - Early Exit Grace)
 
-    Both are floored at 0 — arriving early or leaving after the shift end
-    never counts against the employee.
+    Lunch part — only when the shift enables Lunch Deviation, using the
+    shift's 'Threshold for Late/Compensate' as the lunch grace:
+      - late_lunch_minutes:  lunch IN after (Lunch End Time + threshold)
+      - early_lunch_minutes: lunch OUT before (Lunch Start Time - threshold)
+
+    Returns a dict with the four parts and their totals (late_minutes,
+    early_minutes).  Every part is floored at 0 — arriving early or leaving
+    after the shift end never counts against the employee.
     """
+    result = {
+        "late_shift_minutes":  0.0,
+        "late_lunch_minutes":  0.0,
+        "early_shift_minutes": 0.0,
+        "early_lunch_minutes": 0.0,
+        "late_minutes":        0.0,
+        "early_minutes":       0.0,
+    }
     if not day_checkins or not shift or not shift.get("start_time"):
-        return 0.0, 0.0
+        return result
     start_dt, end_dt = _shift_window_datetimes(shift, work_date)
     if start_dt is None:
-        return 0.0, 0.0
+        return result
 
     late_grace  = flt(shift.get("late_entry_grace") or 0)
     early_grace = flt(shift.get("early_exit_grace") or 0)
@@ -537,17 +558,174 @@ def _late_early_minutes(day_checkins, shift, work_date):
             last_out = c["time"]
             break
 
-    late_minutes = 0.0
     if first_in is not None:
-        late_minutes = max(0.0, (first_in - (start_dt + timedelta(minutes=late_grace)))
-                           .total_seconds() / 60.0)
+        result["late_shift_minutes"] = max(
+            0.0,
+            (first_in - (start_dt + timedelta(minutes=late_grace))).total_seconds() / 60.0,
+        )
 
-    early_minutes = 0.0
     if last_out is not None:
-        early_minutes = max(0.0, ((end_dt - timedelta(minutes=early_grace)) - last_out)
-                            .total_seconds() / 60.0)
+        result["early_shift_minutes"] = max(
+            0.0,
+            ((end_dt - timedelta(minutes=early_grace)) - last_out).total_seconds() / 60.0,
+        )
 
-    return late_minutes, early_minutes
+    # Lunch part — measured on the same lunch punches as the deviation, with
+    # the shift's 'Threshold for Late/Compensate' acting as their grace.
+    pair = _get_lunch_punches(day_checkins, shift, work_date)
+    if pair:
+        lunch_out, lunch_in, lunch_start_dt, lunch_end_dt = pair
+        threshold = get_late_compensate_threshold(shift)
+        result["late_lunch_minutes"] = max(
+            0.0,
+            (lunch_in - (lunch_end_dt + timedelta(minutes=threshold))).total_seconds() / 60.0,
+        )
+        result["early_lunch_minutes"] = max(
+            0.0,
+            ((lunch_start_dt - timedelta(minutes=threshold)) - lunch_out).total_seconds() / 60.0,
+        )
+
+    result["late_minutes"] = result["late_shift_minutes"] + result["late_lunch_minutes"]
+    result["early_minutes"] = result["early_shift_minutes"] + result["early_lunch_minutes"]
+    return result
+
+
+def _grace_flags(late_early):
+    """Late / early flag dict (totals plus their two parts) for one day."""
+    return {
+        "is_late":             late_early["late_minutes"] > 0,
+        "is_early_exit":       late_early["early_minutes"] > 0,
+        "late_minutes":        round(late_early["late_minutes"], 1),
+        "early_minutes":       round(late_early["early_minutes"], 1),
+        "late_shift_minutes":  round(late_early["late_shift_minutes"], 1),
+        "late_lunch_minutes":  round(late_early["late_lunch_minutes"], 1),
+        "early_shift_minutes": round(late_early["early_shift_minutes"], 1),
+        "early_lunch_minutes": round(late_early["early_lunch_minutes"], 1),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Lunch deviation
+# ─────────────────────────────────────────────────────────────────────────────
+
+def is_lunch_deviation_enabled(shift):
+    """True when the shift's 'Enable Lunch Deviation' checkbox is ticked.
+
+    When it is off, no deviation is measured and no day or employee is
+    flagged for lunch deviation.
+    """
+    return bool(flt((shift or {}).get("enable_lunch_deviation") or 0))
+
+
+def get_lunch_deviation_threshold(shift):
+    """Days exceeding the allowed deviation before the employee is flagged.
+
+    Defaults to 5 when the shift does not set it.
+    """
+    raw = (shift or {}).get("lunch_deviation_threshold")
+    if raw in (None, ""):
+        return 5
+    return flt(raw)
+
+
+def get_late_compensate_threshold(shift):
+    """Grace minutes for the lunch late/early decision.
+
+    Minutes after Lunch End Time beyond this count as late entry minutes and
+    minutes before Lunch Start Time beyond it count as early exit minutes.
+    Defaults to 0 when the shift does not set it.
+    """
+    raw = (shift or {}).get("late_compensate_threshold")
+    if raw in (None, ""):
+        return 0
+    return flt(raw)
+
+
+def _get_lunch_punches(day_checkins, shift, work_date=None):
+    """
+    Resolve the day's lunch punches against the shift's scheduled lunch window.
+
+    The lunch OUT punch is the OUT check-in closest to the shift's Lunch Start
+    Time and the lunch IN punch is the next IN check-in closest to its Lunch
+    End Time.  The day's final OUT and any IN before the lunch OUT are not
+    lunch punches, so a plain IN/OUT day has none.
+
+    Returns ``(lunch_out, lunch_in, lunch_start_dt, lunch_end_dt)``, or None
+    when lunch deviation is disabled, the shift has no lunch window, or the
+    day lacks a lunch punch pair.
+    """
+    if not day_checkins or not shift:
+        return None
+    if not is_lunch_deviation_enabled(shift):
+        return None
+    if not shift.get("lunch_start_time") or not shift.get("lunch_end_time"):
+        return None
+    if work_date is None:
+        work_date = day_checkins[0]["time"].date()
+
+    lunch_start_t = _coerce_time(shift.get("lunch_start_time"))
+    lunch_end_t = _coerce_time(shift.get("lunch_end_time"))
+    if lunch_start_t is None or lunch_end_t is None:
+        return None
+
+    lunch_start_dt = datetime.combine(work_date, lunch_start_t)
+    lunch_end_dt = datetime.combine(work_date, lunch_end_t)
+
+    # Night shifts (and any shift starting after the lunch window) run their
+    # lunch after midnight — anchor the window on the day the shift started.
+    start_t = _coerce_time(shift.get("start_time")) if shift.get("start_time") else None
+    if start_t is not None and lunch_start_dt < datetime.combine(work_date, start_t):
+        lunch_start_dt += timedelta(days=1)
+    if lunch_end_dt <= lunch_start_dt:
+        lunch_end_dt += timedelta(days=1)
+
+    sorted_ci = sorted(day_checkins, key=lambda c: c["time"])
+
+    # The day's last punch is its check-out, never the lunch OUT.
+    out_candidates = [c["time"] for c in sorted_ci[:-1] if c["log_type"] == "OUT"]
+    if not out_candidates:
+        return None
+    lunch_out = min(out_candidates, key=lambda t: abs(t - lunch_start_dt))
+
+    # The lunch IN is the next IN after the lunch OUT, closest to Lunch End.
+    in_candidates = [c["time"] for c in sorted_ci
+                     if c["log_type"] == "IN" and c["time"] > lunch_out]
+    if not in_candidates:
+        return None
+    lunch_in = min(in_candidates, key=lambda t: abs(t - lunch_end_dt))
+
+    return lunch_out, lunch_in, lunch_start_dt, lunch_end_dt
+
+
+def get_lunch_deviation(day_checkins, shift, work_date=None):
+    """
+    Minutes the employee deviated from the shift's scheduled lunch break.
+
+    Uses the lunch punches resolved by _get_lunch_punches and reports the
+    absolute distance of each punch from its scheduled time, so leaving early
+    or late and returning early or late all count:
+
+        |actual OUT - Lunch Start Time| + |actual IN - Lunch End Time|
+
+    Returns ``{deviation_minutes, out_time, in_time}``; zeros when the shift
+    has no lunch window configured or the day lacks a lunch punch pair.
+    """
+    empty = {"deviation_minutes": 0.0, "out_time": "", "in_time": ""}
+    pair = _get_lunch_punches(day_checkins, shift, work_date)
+    if not pair:
+        return empty
+    lunch_out, lunch_in, lunch_start_dt, lunch_end_dt = pair
+
+    deviation = (
+        abs((lunch_out - lunch_start_dt).total_seconds())
+        + abs((lunch_in - lunch_end_dt).total_seconds())
+    ) / 60.0
+
+    return {
+        "deviation_minutes": round(deviation, 1),
+        "out_time": lunch_out.strftime("%H:%M:%S"),
+        "in_time": lunch_in.strftime("%H:%M:%S"),
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -862,7 +1040,12 @@ def classify_day(day_checkins, shift, doc_missing_action,
     On working days the shift's grace periods are enforced: minutes beyond
     Late Entry Grace / Early Exit Grace are deducted from the day's hours
     (so a late arrival or early departure can drop Present → Half Day →
-    Absent), and the day is flagged is_late / is_early_exit.
+    Absent), and the day is flagged is_late / is_early_exit.  When Lunch
+    Deviation is enabled the totals also include the lunch parts (late
+    return past Lunch End Time, leaving before Lunch Start Time) beyond the
+    shift's Threshold for Late/Compensate, exposed separately as
+    late_shift_minutes / late_lunch_minutes and early_shift_minutes /
+    early_lunch_minutes.
 
     Status rules (working days):
       - Invalid    — checkins are missing an IN or OUT pair
@@ -888,7 +1071,10 @@ def classify_day(day_checkins, shift, doc_missing_action,
     empty_ot = {"overtime_hours": 0.0, "day_ot_hours": 0.0, "night_ot_hours": 0.0,
                 "weekend_ot_hours": 0.0, "holiday_ot_hours": 0.0}
     flags    = {"is_late": False, "is_early_exit": False,
-                "late_minutes": 0.0, "early_minutes": 0.0}
+                "late_minutes": 0.0, "early_minutes": 0.0,
+                "late_shift_minutes": 0.0, "late_lunch_minutes": 0.0,
+                "early_shift_minutes": 0.0, "early_lunch_minutes": 0.0,
+                "lunch_deviation": 0.0, "is_lunch_deviation": False}
 
     # No checkins at all
     if not day_checkins:
@@ -912,6 +1098,19 @@ def classify_day(day_checkins, shift, doc_missing_action,
         # regardless of the Missing Check-In/Out Action setting.
         return {"status": "Invalid", "hours": 0.0, "absent_hours": 0.0, **empty_ot, **flags}
 
+    # Lunch deviation — minutes away from the shift's scheduled lunch window.
+    # A day beyond the shift's allowed minutes is flagged so process_employee
+    # can count it against the employee's day threshold. Nothing is measured
+    # unless the shift enables lunch deviation.
+    if is_lunch_deviation_enabled(shift):
+        deviation = get_lunch_deviation(day_checkins, shift, work_date)["deviation_minutes"]
+        flags["lunch_deviation"] = deviation
+        flags["is_lunch_deviation"] = (
+            deviation > flt(shift.get("lunch_deviation_minutes") or 0)
+        )
+    lunch_flags = {"lunch_deviation": flags["lunch_deviation"],
+                   "is_lunch_deviation": flags["is_lunch_deviation"]}
+
     hours = calc_working_hours(day_checkins, method, lunch_break_hours=lunch_break)
     ot    = calc_overtime_hours(day_checkins, shift, hours, day_type=day_type, method=method,
                                 work_date=work_date)
@@ -930,7 +1129,9 @@ def classify_day(day_checkins, shift, doc_missing_action,
         # Span without lunch (lunch excluded from threshold comparison)
         raw_hours = calc_working_hours(day_checkins, method, lunch_break_hours=0)
         # Apply grace periods — late / early beyond grace reduce hours
-        late_min, early_min = _late_early_minutes(day_checkins, shift, work_date)
+        late_early = _late_early_minutes(day_checkins, shift, work_date)
+        late_min   = late_early["late_minutes"]
+        early_min  = late_early["early_minutes"]
         sat_class_hours = max(0.0, raw_hours - (late_min + early_min) / 60.0)
 
         # Overtime on Saturday obeys the shift's overtime settings exactly like
@@ -958,16 +1159,16 @@ def classify_day(day_checkins, shift, doc_missing_action,
                       "night_ot_hours": 0.0,
                       "weekend_ot_hours": 0.0,
                       "holiday_ot_hours": 0.0}
-        sat_flags = {"is_late": late_min > 0, "is_early_exit": early_min > 0,
-                     "late_minutes": round(late_min, 1),
-                     "early_minutes": round(early_min, 1)}
+        sat_flags = {**_grace_flags(late_early), **lunch_flags}
         # Saturday Half Day: any worked hours → Present, none → Absent
         if sat_class_hours > 0:
             return {"status": "Present", "hours": sat_class_hours, "absent_hours": 0.0, **sat_ot, **sat_flags}
         return {"status": "Absent", "hours": 0.0, "absent_hours": std_hours, **sat_ot, **sat_flags}
 
     # Working day — enforce the shift's grace periods
-    late_min, early_min = _late_early_minutes(day_checkins, shift, work_date)
+    late_early = _late_early_minutes(day_checkins, shift, work_date)
+    late_min   = late_early["late_minutes"]
+    early_min  = late_early["early_minutes"]
     eff_hours = max(0.0, hours - (late_min + early_min) / 60.0)
 
     # For classification, use the raw span (before lunch deduction) so that
@@ -977,8 +1178,7 @@ def classify_day(day_checkins, shift, doc_missing_action,
     raw_hours = calc_working_hours(day_checkins, method, lunch_break_hours=0)
     class_hours = max(0.0, raw_hours - (late_min + early_min) / 60.0)
 
-    flags = {"is_late": late_min > 0, "is_early_exit": early_min > 0,
-             "late_minutes": round(late_min, 1), "early_minutes": round(early_min, 1)}
+    flags = {**_grace_flags(late_early), **lunch_flags}
 
     if class_hours > half_hours:
         return {"status": "Present", "hours": eff_hours, "absent_hours": 0.0, **ot, **flags}
@@ -1020,6 +1220,8 @@ def process_employee(employee, from_date, to_date,
     overtime_days      = 0
     invalid_days       = 0
     manual_review_days = 0
+    lunch_deviation_days    = 0
+    lunch_deviation_minutes = 0.0
     remarks_list       = []
 
     current = from_date
@@ -1050,6 +1252,10 @@ def process_employee(employee, from_date, to_date,
         if result.get("is_early_exit"):
             remarks_list.append("{}: early exit ({} min)".format(
                 work_date, int(result.get("early_minutes") or 0)))
+
+        lunch_deviation_minutes += flt(result.get("lunch_deviation") or 0)
+        if result.get("is_lunch_deviation"):
+            lunch_deviation_days += 1
 
         total_hours    += result["hours"]
         absent_hours   += result["absent_hours"]
@@ -1106,6 +1312,12 @@ def process_employee(employee, from_date, to_date,
         "overtime_days":       overtime_days,
         "invalid_days":        invalid_days,
         "manual_review_days":  manual_review_days,
+        "lunch_deviation_days":    lunch_deviation_days,
+        "lunch_deviation_minutes": round(lunch_deviation_minutes, 1),
+        "lunch_deviation_flagged": (
+            is_lunch_deviation_enabled(shift)
+            and lunch_deviation_days > get_lunch_deviation_threshold(shift)
+        ),
         "remarks":             ", ".join(remarks_list[:5]) if remarks_list else "",
     }
 
@@ -1166,6 +1378,12 @@ def get_employee_daily_breakdown(employee, from_date, to_date,
             "is_early_exit":    bool(result.get("is_early_exit")),
             "late_minutes":     result.get("late_minutes", 0.0),
             "early_minutes":    result.get("early_minutes", 0.0),
+            "late_shift_minutes":  result.get("late_shift_minutes", 0.0),
+            "late_lunch_minutes":  result.get("late_lunch_minutes", 0.0),
+            "early_shift_minutes": result.get("early_shift_minutes", 0.0),
+            "early_lunch_minutes": result.get("early_lunch_minutes", 0.0),
+            "lunch_deviation":      result.get("lunch_deviation", 0.0),
+            "is_lunch_deviation":   bool(result.get("is_lunch_deviation")),
             "overtime_hours":   result.get("overtime_hours", 0.0),
             "day_ot_hours":     result.get("day_ot_hours", 0.0),
             "night_ot_hours":   result.get("night_ot_hours", 0.0),
@@ -1358,6 +1576,18 @@ def get_daily_checkins_data(attendance_summary=None, from_date=None, to_date=Non
         shift_doc = get_shift_for_employee(emp_id, from_date, default_shift)
         shift_name = shift_doc.get("name") if shift_doc else ""
 
+        # Lunch deviation summary — flag the employee once the number of days
+        # beyond the shift's allowed deviation exceeds its day threshold.
+        lunch_deviation_enabled = is_lunch_deviation_enabled(shift_doc)
+        lunch_deviation_days = (
+            sum(1 for d in days if d.get("is_lunch_deviation"))
+            if lunch_deviation_enabled else 0
+        )
+        lunch_deviation_minutes = round(
+            sum(flt(d.get("lunch_deviation") or 0) for d in days), 1
+        ) if lunch_deviation_enabled else 0.0
+        lunch_deviation_threshold = get_lunch_deviation_threshold(shift_doc)
+
         employees.append({
             "employee":             emp_id,
             "employee_name":        emp_name,
@@ -1366,6 +1596,13 @@ def get_daily_checkins_data(attendance_summary=None, from_date=None, to_date=Non
             "zk_biometric_device":  zk_device,
             "attendance_device_id": att_dev_id,
             "shift_type":           shift_name,
+            "lunch_deviation_enabled": bool(lunch_deviation_enabled),
+            "lunch_deviation_days": lunch_deviation_days,
+            "lunch_deviation_minutes": lunch_deviation_minutes,
+            "lunch_deviation_threshold": lunch_deviation_threshold,
+            "lunch_deviation_flagged": (
+                lunch_deviation_enabled and lunch_deviation_days > lunch_deviation_threshold
+            ),
             "days":                 days,
         })
 

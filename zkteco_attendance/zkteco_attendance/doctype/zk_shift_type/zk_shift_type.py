@@ -10,6 +10,7 @@ class ZKShiftType(Document):
         self._validate_company()
         self._validate_hours()
         self._validate_times()
+        self._validate_lunch()
 
     def _validate_company(self):
         # Company is optional when 'Ignore Company Restriction' is enabled.
@@ -34,6 +35,21 @@ class ZKShiftType(Document):
                       "For shifts crossing midnight, or running a full 24 hours "
                       "(the same Start and End Time), enable 'Night Shift'.")
                 )
+
+    def _validate_lunch(self):
+        # Nothing is measured while lunch deviation is disabled, so the lunch
+        # window and its allowance/threshold are not required either.
+        if not self.enable_lunch_deviation:
+            return
+        # Lunch deviation tracking needs both ends of the lunch window; the
+        # allowance/threshold alone do nothing without them.
+        if not (self.lunch_start_time and self.lunch_end_time):
+            frappe.throw(_("Lunch Start Time and Lunch End Time are required "
+                           "when Enable Lunch Deviation is checked."))
+        start = datetime.strptime(str(self.lunch_start_time), "%H:%M:%S")
+        end = datetime.strptime(str(self.lunch_end_time), "%H:%M:%S")
+        if end <= start:
+            frappe.throw(_("Lunch End Time must be after Lunch Start Time."))
 
     def get_attendance_date(self, checkin_dt):
         """

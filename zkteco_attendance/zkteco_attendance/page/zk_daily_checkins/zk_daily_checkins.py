@@ -1,7 +1,7 @@
 import frappe
 from frappe import _
 
-from frappe.utils import cstr, flt, getdate
+from frappe.utils import cint, cstr, flt, getdate
 
 
 @frappe.whitelist()
@@ -107,6 +107,70 @@ def get_invalid_days(attendance_summary=None, from_date=None, to_date=None,
         "from_date": data.get("from_date"),
         "to_date":   data.get("to_date"),
         "invalids":  invalids,
+        "total_employees_checked": len(data.get("employees") or []),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Lunch deviation flags — employees whose lunch deviation exceeded the shift's
+# allowed minutes on more days than the shift's day threshold. Feeds the
+# "Check lunch deviation" dialog and its Excel download.
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist()
+def get_lunch_deviation_flags(attendance_summary=None, from_date=None, to_date=None,
+                              employee_list=None, company=None, biometric_device=None,
+                              filter_employee=None, filter_project=None):
+    """
+    Return only the employees who are lunch-deviation flagged, together with
+    the days that counted towards the flag and their deviation minutes.
+
+    Accepts the same arguments as `get_data`, so "Check lunch deviation"
+    always matches the currently filtered view on the page.
+    """
+    from zkteco_attendance.zkteco_attendance.api.endpoints import get_daily_checkins
+
+    data = get_daily_checkins(
+        attendance_summary=attendance_summary,
+        from_date=from_date,
+        to_date=to_date,
+        employee_list=employee_list,
+        company=company,
+        biometric_device=biometric_device,
+        filter_employee=filter_employee,
+        filter_project=filter_project,
+    )
+
+    flagged = []
+    for emp in data.get("employees") or []:
+        # The per-employee flag already accounts for the shift's setting and
+        # its day threshold, so shifts with lunch deviation disabled never
+        # reach this list.
+        if not emp.get("lunch_deviation_flagged"):
+            continue
+
+        deviated_days = [
+            d for d in (emp.get("days") or []) if d.get("is_lunch_deviation")
+        ]
+        deviation_dates = [d.get("date") for d in deviated_days]
+
+        flagged.append({
+            "employee":         emp.get("employee"),
+            "employee_name":    emp.get("employee_name") or emp.get("employee"),
+            "department":       emp.get("department") or "",
+            "designation":      emp.get("designation") or "",
+            "shift_type":       emp.get("shift_type") or "",
+            "threshold":        cint(emp.get("lunch_deviation_threshold") or 0),
+            "deviation_days":   len(deviated_days),
+            "deviation_minutes": flt(emp.get("lunch_deviation_minutes") or 0),
+            "deviation_dates":  deviation_dates,
+            "deviation_dates_text": ", ".join(cstr(dt or "") for dt in deviation_dates),
+        })
+
+    return {
+        "from_date": data.get("from_date"),
+        "to_date":   data.get("to_date"),
+        "flagged":   flagged,
         "total_employees_checked": len(data.get("employees") or []),
     }
 
@@ -230,6 +294,147 @@ def download_invalid_days_excel(attendance_summary=None, from_date=None, to_date
     frappe.local.response.type        = "binary"
     frappe.local.response.filename    = "Invalid_Days_{0}_to_{1}.xlsx".format(from_d, to_d)
     frappe.local.response.filecontent = xlsx
+
+
+# ---------------------------------------------------------------------------
+# Lunch deviation download — streams the employees listed by the
+# "Check lunch deviation" dialog as an .xlsx workbook.
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist()
+def download_lunch_deviation_excel(attendance_summary=None, from_date=None, to_date=None,
+                                   employee_list=None, company=None, biometric_device=None,
+                                   filter_employee=None, filter_project=None):
+    """
+    Stream an Excel workbook of the lunch-deviation flagged employees, accepting
+    the exact same arguments as `get_lunch_deviation_flags`, so the workbook
+    always matches what the dialog displays.
+    """
+    payload = get_lunch_deviation_flags(
+        attendance_summary=attendance_summary,
+        from_date=from_date,
+        to_date=to_date,
+        employee_list=employee_list,
+        company=company,
+        biometric_device=biometric_device,
+        filter_employee=filter_employee,
+        filter_project=filter_project,
+    )
+
+    xlsx = _build_lunch_deviation_workbook(payload)
+
+    from_d = cstr(payload.get("from_date") or from_date or "start")
+    to_d   = cstr(payload.get("to_date")   or to_date   or "end")
+
+    frappe.local.response.type        = "binary"
+    frappe.local.response.filename    = "Lunch_Deviation_{0}_to_{1}.xlsx".format(from_d, to_d)
+    frappe.local.response.filecontent = xlsx
+
+
+_EXCEL_LUNCH_DEVIATION_COLUMNS = (
+    ("employee",         _("Employee ID")),
+    ("employee_name",    _("Employee Name")),
+    ("department",       _("Department")),
+    ("shift_type",       _("Shift")),
+    ("deviation_days",   _("Deviation Days")),
+    ("threshold",        _("Threshold (Days)")),
+    ("deviation_minutes", _("Total Deviation (min)")),
+    ("deviation_dates",  _("Deviation Dates")),
+)
+
+_EXCEL_LUNCH_DEVIATION_WIDTHS = {
+    "employee": 12, "employee_name": 22, "department": 16, "shift_type": 14,
+    "deviation_days": 14, "threshold": 15, "deviation_minutes": 20,
+    "deviation_dates": 52,
+}
+
+
+def _build_lunch_deviation_workbook(payload):
+    """
+    Build the lunch deviation Excel workbook and return it as bytes.
+    One row per flagged employee, with the deviated days comma separated in a
+    single column — the same layout the dialog shows.
+    """
+    from io import BytesIO
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    from frappe.utils import now_datetime
+
+    flagged = payload.get("flagged") or []
+    period = "{0} to {1}".format(
+        cstr(payload.get("from_date") or ""), cstr(payload.get("to_date") or ""))
+
+    meta_bits = [_("Employees Flagged for Lunch Deviation")]
+    if payload.get("attendance_summary"):
+        meta_bits.append(_("Attendance Summary: {0}").format(payload.get("attendance_summary")))
+    meta_bits.append(_("Generated by {0} on {1}").format(
+        frappe.session.user, now_datetime().strftime("%d %b %Y, %H:%M")))
+    meta_line = "  |  ".join(meta_bits)
+
+    hdr_fill  = PatternFill("solid", fgColor="16324F")
+    hdr_font  = Font(color="FFFFFF", bold=True)
+    thin      = Side(style="thin", color="D6E2EF")
+    border    = Border(left=thin, right=thin, top=thin, bottom=thin)
+    title_font = Font(bold=True, size=13, color="16324F")
+    meta_font  = Font(size=9, color="5B6B7A")
+    warn_font  = Font(color="8A4B08", bold=True)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = _("Lunch Deviation")
+
+    ncols = len(_EXCEL_LUNCH_DEVIATION_COLUMNS)
+    last_col = get_column_letter(ncols)
+    title = _("Employees Flagged for Lunch Deviation")
+    if period != " to ":
+        title += " — {0}".format(period)
+    ws.merge_cells("A1:{0}1".format(last_col))
+    ws["A1"] = title
+    ws["A1"].font = title_font
+    ws.merge_cells("A2:{0}2".format(last_col))
+    ws["A2"] = meta_line
+    ws["A2"].font = meta_font
+
+    hdr_row = 4
+    for col_idx, (_key, label) in enumerate(_EXCEL_LUNCH_DEVIATION_COLUMNS, start=1):
+        cell = ws.cell(row=hdr_row, column=col_idx, value=label)
+        cell.fill = hdr_fill
+        cell.font = hdr_font
+        cell.border = border
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    for col_idx, (key, _label) in enumerate(_EXCEL_LUNCH_DEVIATION_COLUMNS, start=1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = \
+            _EXCEL_LUNCH_DEVIATION_WIDTHS.get(key, 12)
+
+    r = hdr_row + 1
+    for emp in flagged:
+        values = {
+            "employee":          emp.get("employee") or "",
+            "employee_name":     emp.get("employee_name") or emp.get("employee") or "",
+            "department":        emp.get("department") or "",
+            "shift_type":        emp.get("shift_type") or "",
+            "deviation_days":    int(flt(emp.get("deviation_days") or 0)),
+            "threshold":         int(flt(emp.get("threshold") or 0)),
+            "deviation_minutes": flt(emp.get("deviation_minutes") or 0),
+            "deviation_dates":   emp.get("deviation_dates_text") or ", ".join(
+                cstr(dt or "") for dt in emp.get("deviation_dates") or []),
+        }
+        for col_idx, (key, _label) in enumerate(_EXCEL_LUNCH_DEVIATION_COLUMNS, start=1):
+            cell = ws.cell(row=r, column=col_idx, value=values[key])
+            cell.border = border
+        ws.cell(row=r, column=1).font = warn_font
+        r += 1
+
+    ws.freeze_panes = "A{0}".format(hdr_row + 1)
+    ws.auto_filter.ref = "A{0}:{1}{2}".format(
+        hdr_row, last_col, max(r - 1, hdr_row))
+
+    out = BytesIO()
+    wb.save(out)
+    return out.getvalue()
 
 
 _EXCEL_INVALID_DAY_COLUMNS = (
