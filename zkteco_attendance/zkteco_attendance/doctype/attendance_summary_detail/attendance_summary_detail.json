@@ -17,12 +17,17 @@
         "half_days",
         "total_working_hours",
         "absent_hours",
+        "column_break_33",
+        "status_absent_days",
+        "standard_daily_hours",
+        "extra_absent_days",
         "late_sec",
         "late_shift_minutes",
         "late_lunch_minutes",
         "late_col",
         "late_hours",
         "additional_working_hours",
+        "overall_late_hours",
         "overtime_sec",
         "overtime_hours",
         "day_ot_hours",
@@ -111,7 +116,7 @@
         },
         {
             "fieldname": "absent_days",
-            "fieldtype": "Float",
+            "fieldtype": "Int",
             "label": "Absent Days",
             "read_only": 1,
             "in_list_view": 1,
@@ -138,8 +143,40 @@
             "label": "Absent Hours",
             "read_only": 1,
             "columns": 1,
-            "description": "Recorded absent hours minus the total late hours and the total additional working hours of the period."
+            "description": "Remaining hours after converting Overall Late Hours into whole Extra Absent Days."
         },
+        {
+            "fieldname": "column_break_33",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "standard_daily_hours",
+            "fieldtype": "Float",
+            "label": "Standard Daily Hours",
+            "read_only": 1,
+            "in_list_view": 1,
+            "columns": 1,
+            "description": "Standard Daily Hours from the employee's shift on the From Date, used to calculate Extra Absent Days."
+        },
+        {
+            "fieldname": "status_absent_days",
+            "fieldtype": "Int",
+            "label": "Status Absent Days",
+            "read_only": 1,
+            "in_list_view": 1,
+            "columns": 1,
+            "description": "Count of full Absent statuses. Half Day statuses are counted separately in Half Days."
+        },
+        {
+            "fieldname": "extra_absent_days",
+            "fieldtype": "Int",
+            "label": "Extra Absent Days",
+            "read_only": 1,
+            "in_list_view": 1,
+            "columns": 1,
+            "description": "Whole days calculated as Absent Hours divided by Standard Daily Hours, added only when Absent Hours exceeds Standard Daily Hours."
+        },
+
         {
             "fieldname": "late_sec",
             "fieldtype": "Section Break",
@@ -148,20 +185,20 @@
         {
             "fieldname": "late_shift_minutes",
             "fieldtype": "Float",
-            "label": "Late Entry (Shift Start) Min",
+            "label": "Late Entry (L-EN) Min",
             "read_only": 1,
             "in_list_view": 1,
             "columns": 1,
-            "description": "Minutes the first check-in was late beyond Late Entry Grace."
+            "description": "Total late-entry minutes (L-EN) shown on Employee Daily Checkins, including shift and lunch boundaries."
         },
         {
             "fieldname": "late_lunch_minutes",
             "fieldtype": "Float",
-            "label": "Late Return (Lunch End) Min",
+            "label": "Early Exit (E-EX) Min",
             "read_only": 1,
             "in_list_view": 1,
             "columns": 1,
-            "description": "Minutes the lunch check-in was late beyond the shift's Threshold for Late/Compensate."
+            "description": "Total early-exit minutes (E-EX) shown on Employee Daily Checkins, including shift and lunch boundaries."
         },
         {
             "fieldname": "late_col",
@@ -170,11 +207,11 @@
         {
             "fieldname": "late_hours",
             "fieldtype": "Float",
-            "label": "Late Hours",
+            "label": "Total Late Hours",
             "read_only": 1,
             "in_list_view": 1,
             "columns": 1,
-            "description": "Total late minutes (shift start + lunch end) converted to hours."
+            "description": "L-EN and E-EX minutes combined and converted to hours."
         },
         {
             "fieldname": "additional_working_hours",
@@ -184,6 +221,15 @@
             "in_list_view": 1,
             "columns": 1,
             "description": "Minutes worked beyond the shift's boundaries (before start, after lunch start, before lunch end, after end), counted once they pass the Threshold for Late/Compensate (the threshold only decides whether a boundary counts, it is not deducted), converted to hours."
+        },
+        {
+            "fieldname": "overall_late_hours",
+            "fieldtype": "Float",
+            "label": "Overall Late Hours",
+            "read_only": 1,
+            "in_list_view": 1,
+            "columns": 1,
+            "description": "Late Hours minus Additional Working Hours, before converting whole days into Extra Absent Days."
         },
         {
             "fieldname": "overtime_sec",

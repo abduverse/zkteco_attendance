@@ -1322,10 +1322,9 @@ def process_employee(employee, from_date, to_date,
     )
 
     working_days       = 0.0
-    absent_days        = 0.0
+    status_absent_days = 0
     half_days          = 0.0
     total_hours        = 0.0
-    absent_hours       = 0.0
     overtime_hours     = 0.0
     day_ot_hours       = 0.0
     night_ot_hours     = 0.0
@@ -1338,6 +1337,8 @@ def process_employee(employee, from_date, to_date,
     lunch_deviation_minutes = 0.0
     late_shift_minutes = 0.0
     late_lunch_minutes = 0.0
+    late_entry_minutes = 0.0
+    early_exit_minutes = 0.0
     additional_minutes = 0.0
     remarks_list       = []
 
@@ -1376,10 +1377,11 @@ def process_employee(employee, from_date, to_date,
 
         late_shift_minutes += flt(result.get("late_shift_minutes") or 0)
         late_lunch_minutes += flt(result.get("late_lunch_minutes") or 0)
+        late_entry_minutes += flt(result.get("late_minutes") or 0)
+        early_exit_minutes += flt(result.get("early_minutes") or 0)
         additional_minutes += flt(result.get("additional_minutes") or 0)
 
         total_hours    += result["hours"]
-        absent_hours   += result["absent_hours"]
         overtime_hours += result.get("overtime_hours", 0.0)
         day_ot_hours   += result.get("day_ot_hours", 0.0)
         night_ot_hours += result.get("night_ot_hours", 0.0)
@@ -1405,11 +1407,9 @@ def process_employee(employee, from_date, to_date,
         if result["status"] == "Present":
             working_days += 1.0
         elif result["status"] == "Half Day":
-            working_days += 0.5
             half_days    += 1
-            absent_days  += 0.5
         elif result["status"] == "Absent":
-            absent_days  += 1.0
+            status_absent_days += 1
         elif result["status"] == "Invalid":
             invalid_days += 1
             remarks_list.append("{}: invalid checkin".format(work_date))
@@ -1419,25 +1419,43 @@ def process_employee(employee, from_date, to_date,
 
         current += timedelta(days=1)
 
-    # Late entry minutes (shift start + lunch end) and the additional working
-    # minutes credited around the shift's boundaries, both carried as hours so
-    # they can be set against the absence: the absent hours of the period are
-    # the recorded absent hours minus those late and additional hours.
-    total_late_minutes       = late_shift_minutes + late_lunch_minutes
-    late_hours               = round(total_late_minutes / 60.0, 2)
+    # L-EN and E-EX form Late Hours. Additional working hours offset those
+    # late hours when calculating absent hours.
+    total_late_minutes       = late_entry_minutes
+    total_early_minutes      = early_exit_minutes
+    late_hours               = round(
+        (total_late_minutes + total_early_minutes) / 60.0, 2)
     additional_working_hours = round(additional_minutes / 60.0, 2)
-    net_absent_hours         = max(0.0, absent_hours - late_hours - additional_working_hours)
+    overall_late_hours = round(max(0.0, late_hours - additional_working_hours), 4)
+    standard_daily_hours = (
+        flt(shift.get("standard_working_hours") or 8) if shift else 8.0
+    )
+    extra_absent_days = (
+        int(overall_late_hours / standard_daily_hours)
+        if standard_daily_hours > 0
+        else 0
+    )
+    remaining_absent_hours = round(
+        overall_late_hours - extra_absent_days * standard_daily_hours, 4)
+    total_absent_days = status_absent_days + extra_absent_days
 
     return {
         "working_days":        round(working_days, 1),
-        "absent_days":         round(absent_days, 1),
+        "absent_days":         total_absent_days,
+        "status_absent_days":  status_absent_days,
+        "extra_absent_days":   extra_absent_days,
+        "standard_daily_hours": standard_daily_hours,
         "half_days":           half_days,
         "total_working_hours": round(total_hours, 2),
-        "absent_hours":        round(net_absent_hours, 2),
+        "absent_hours":        remaining_absent_hours,
         "late_minutes":             round(total_late_minutes, 1),
+        "early_minutes":            round(total_early_minutes, 1),
+        "late_entry_minutes":       round(total_late_minutes, 1),
+        "early_exit_minutes":       round(total_early_minutes, 1),
         "late_shift_minutes":       round(late_shift_minutes, 1),
         "late_lunch_minutes":       round(late_lunch_minutes, 1),
         "late_hours":               late_hours,
+        "overall_late_hours":       overall_late_hours,
         "additional_working_minutes": round(additional_minutes, 1),
         "additional_working_hours":   additional_working_hours,
         "overtime_hours":      round(overtime_hours, 2),

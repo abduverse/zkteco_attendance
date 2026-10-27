@@ -134,9 +134,13 @@ def _process_background(summary_name):
             # Reset computed fields so reprocessing doesn't leave stale data
             row.working_days        = 0
             row.absent_days         = 0
+            row.status_absent_days = 0
+            row.extra_absent_days  = 0
+            row.standard_daily_hours = 0
             row.half_days           = 0
             row.total_working_hours = 0
             row.absent_hours        = 0
+            row.overall_late_hours = 0
             row.late_shift_minutes  = 0
             row.late_lunch_minutes  = 0
             row.late_hours          = 0
@@ -163,13 +167,17 @@ def _process_background(summary_name):
         )
         row.working_days        = result["working_days"]
         row.absent_days         = result["absent_days"]
+        row.status_absent_days = result["status_absent_days"]
+        row.extra_absent_days  = result["extra_absent_days"]
+        row.standard_daily_hours = result["standard_daily_hours"]
         row.half_days           = result["half_days"]
         row.total_working_hours = result["total_working_hours"]
-        # Absent hours already net of the period's late and additional hours
-        # (see process_employee).
+        # Overall Late Hours are converted into Extra Absent Days and
+        # remaining Absent Hours (see process_employee).
         row.absent_hours        = result["absent_hours"]
-        row.late_shift_minutes  = result.get("late_shift_minutes", 0.0)
-        row.late_lunch_minutes  = result.get("late_lunch_minutes", 0.0)
+        row.overall_late_hours = result["overall_late_hours"]
+        row.late_shift_minutes  = result.get("late_entry_minutes", 0.0)
+        row.late_lunch_minutes  = result.get("early_exit_minutes", 0.0)
         row.late_hours          = result.get("late_hours", 0.0)
         row.additional_working_hours = result.get("additional_working_hours", 0.0)
         row.overtime_hours      = result["overtime_hours"]
@@ -195,4 +203,3 @@ def _process_background(summary_name):
     doc.total_holiday_ot_hours = round(sum(flt(r.holiday_ot_hours) for r in processed_rows), 2)
     doc.save(ignore_permissions=True)
     frappe.db.commit()
-

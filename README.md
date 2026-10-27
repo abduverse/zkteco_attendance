@@ -234,9 +234,16 @@ attendance report for a date range:
 4. Click **Process Attendance**. This runs in the background; the form
    polls automatically and reloads when done.
 5. Each row in **Details** shows: Working Days, Absent Days, Half Days,
-   Total Hours, Absent Hours, **Overtime Hours** (split into **Day OT**,
+   Total Hours, Absent Hours, L-EN minutes, E-EX minutes, Late Hours,
+   Additional Working Hours, **Overtime Hours** (split into **Day OT**,
    **Night OT**, **Weekend OT**, **Holiday OT**), OT Days, Invalid Days,
-   and Manual Review flags.
+   and Manual Review flags. L-EN and E-EX match the totals shown on Employee
+   Daily Checkins. Overall Late Hours is Late Hours (L-EN + E-EX) minus
+   Additional Working Hours, with a minimum of zero. Extra Absent Days is
+   the whole-day portion of Overall Late Hours divided by Standard Daily
+   Hours; Absent Hours shows the remaining hours. Absent Days is the count of
+   full Absent statuses plus Extra Absent Days. Half Day statuses are counted
+   separately in Half Days and do not add to Working Days.
 6. The summary totals show **Total Employees**, **Working Days in
    Period**, **Total Overtime Hours**, and the Day / Night / Weekend /
    Holiday OT subtotals.

@@ -2089,8 +2089,9 @@ class TestAdditionalWorkingMinutes(unittest.TestCase):
 
     @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_holidays_in_range")
     @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_shift_for_employee")
-    def test_process_employee_reduces_absent_hours(self, mock_shift, mock_holidays):
-        """Absent hours = recorded absent hours - late hours - additional hours."""
+    def test_process_employee_calculates_absent_hours_from_late_and_additional(
+            self, mock_shift, mock_holidays):
+        """Absent hours = max(0, late hours - additional working hours)."""
         from zkteco_attendance.zkteco_attendance.attendance_processor import process_employee
 
         mock_holidays.return_value = {}
@@ -2106,13 +2107,161 @@ class TestAdditionalWorkingMinutes(unittest.TestCase):
             doc_missing_action="Mark as Invalid",
         )
 
-        # 08/10: 15 min late + 30 min past shift end. 08/11: absent for 8 hours.
+        # 08/10: 15 min late + 30 min past shift end.
         self.assertAlmostEqual(result["late_shift_minutes"], 15.0, places=1)
         self.assertAlmostEqual(result["late_lunch_minutes"], 0.0, places=1)
+        self.assertAlmostEqual(result["late_entry_minutes"], 15.0, places=1)
+        self.assertAlmostEqual(result["early_exit_minutes"], 0.0, places=1)
         self.assertAlmostEqual(result["late_hours"], 0.25, places=2)
         self.assertAlmostEqual(result["additional_working_minutes"], 30.0, places=1)
         self.assertAlmostEqual(result["additional_working_hours"], 0.5, places=2)
-        self.assertAlmostEqual(result["absent_hours"], 8.0 - 0.25 - 0.5, places=2)
+        self.assertAlmostEqual(result["overall_late_hours"], 0.0, places=4)
+        self.assertAlmostEqual(result["absent_hours"], 0.0, places=2)
+        self.assertEqual(result["status_absent_days"], 1)
+        self.assertEqual(result["extra_absent_days"], 0)
+        self.assertEqual(result["standard_daily_hours"], 8.0)
+        self.assertEqual(result["absent_days"], 1)
+
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_holidays_in_range")
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_shift_for_employee")
+    def test_early_exit_reduces_absent_hours_without_fractional_absent_days(
+            self, mock_shift, mock_holidays):
+        from zkteco_attendance.zkteco_attendance.attendance_processor import process_employee
+
+        mock_holidays.return_value = {}
+        mock_shift.return_value = _day_shift(late_entry_grace=0, early_exit_grace=0)
+        checkins = [
+            _mk_checkin("C1", "2026-08-10 09:00:00", "IN"),
+            _mk_checkin("C2", "2026-08-10 16:00:00", "OUT"),
+        ]
+        result = process_employee(
+            employee="EMP-EARLY", from_date="2026-08-10", to_date="2026-08-11",
+            checkin_list=checkins, default_shift_name=None,
+            doc_missing_action="Mark as Invalid",
+        )
+
+        self.assertAlmostEqual(result["late_entry_minutes"], 60.0, places=1)
+        self.assertAlmostEqual(result["early_exit_minutes"], 60.0, places=1)
+        self.assertAlmostEqual(result["late_hours"], 2.0, places=2)
+        self.assertAlmostEqual(result["overall_late_hours"], 2.0, places=4)
+        self.assertAlmostEqual(result["absent_hours"], 2.0, places=2)
+        self.assertEqual(result["status_absent_days"], 1)
+        self.assertEqual(result["extra_absent_days"], 0)
+        self.assertEqual(result["absent_days"], 1)
+        self.assertEqual(result["half_days"], 0)
+
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_holidays_in_range")
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_shift_for_employee")
+    def test_extra_absent_days_are_whole_days_based_on_standard_daily_hours(
+            self, mock_shift, mock_holidays):
+        from zkteco_attendance.zkteco_attendance.attendance_processor import process_employee
+
+        mock_holidays.return_value = {}
+        mock_shift.return_value = _day_shift(standard_working_hours=8)
+        checkins = []
+        for day in range(10, 15):
+            checkins.extend([
+                _mk_checkin("IN-{}".format(day), "2026-08-{} 10:00:00".format(day), "IN"),
+                _mk_checkin("OUT-{}".format(day), "2026-08-{} 17:00:00".format(day), "OUT"),
+            ])
+        result = process_employee(
+            employee="EMP-EXTRA-ABSENT", from_date="2026-08-10", to_date="2026-08-14",
+            checkin_list=checkins, default_shift_name=None,
+            doc_missing_action="Mark as Invalid",
+        )
+
+        self.assertEqual(result["overall_late_hours"], 10.0)
+        self.assertEqual(result["absent_hours"], 2.0)
+        self.assertEqual(result["status_absent_days"], 0)
+        self.assertEqual(result["standard_daily_hours"], 8.0)
+        self.assertEqual(result["extra_absent_days"], 1)
+        self.assertEqual(result["absent_days"], 1)
+
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.classify_day")
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_holidays_in_range")
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_shift_for_employee")
+    def test_overall_late_hours_split_into_extra_days_and_remaining_hours(
+            self, mock_shift, mock_holidays, mock_classify):
+        from zkteco_attendance.zkteco_attendance.attendance_processor import process_employee
+
+        mock_holidays.return_value = {}
+        mock_shift.return_value = _day_shift(standard_working_hours=8)
+        mock_classify.return_value = {
+            "status": "Present",
+            "hours": 8.0,
+            "absent_hours": 0.0,
+            "late_minutes": 15.72 * 60,
+            "early_minutes": 0.0,
+            "late_shift_minutes": 15.72 * 60,
+            "late_lunch_minutes": 0.0,
+            "additional_minutes": 3.82 * 60,
+            "is_late": False,
+            "is_early_exit": False,
+            "lunch_deviation": 0.0,
+            "is_lunch_deviation": False,
+        }
+
+        result = process_employee(
+            employee="EMP-LATE-BREAKDOWN", from_date="2026-08-10", to_date="2026-08-10",
+            checkin_list=[], default_shift_name=None,
+            doc_missing_action="Mark as Invalid",
+        )
+
+        self.assertAlmostEqual(result["late_hours"], 15.72, places=4)
+        self.assertAlmostEqual(result["additional_working_hours"], 3.82, places=4)
+        self.assertAlmostEqual(result["overall_late_hours"], 11.9, places=4)
+        self.assertEqual(result["extra_absent_days"], 1)
+        self.assertAlmostEqual(result["absent_hours"], 3.9, places=4)
+
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_holidays_in_range")
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_shift_for_employee")
+    def test_extra_absent_days_require_absent_hours_to_exceed_standard_hours(
+            self, mock_shift, mock_holidays):
+        from zkteco_attendance.zkteco_attendance.attendance_processor import process_employee
+
+        mock_holidays.return_value = {}
+        mock_shift.return_value = _day_shift(standard_working_hours=8)
+        checkins = []
+        for day in range(10, 14):
+            checkins.extend([
+                _mk_checkin("IN-{}".format(day), "2026-08-{} 10:00:00".format(day), "IN"),
+                _mk_checkin("OUT-{}".format(day), "2026-08-{} 17:00:00".format(day), "OUT"),
+            ])
+        result = process_employee(
+            employee="EMP-ABSENT-BOUNDARY", from_date="2026-08-10", to_date="2026-08-13",
+            checkin_list=checkins, default_shift_name=None,
+            doc_missing_action="Mark as Invalid",
+        )
+
+        self.assertEqual(result["overall_late_hours"], 8.0)
+        self.assertEqual(result["absent_hours"], 0.0)
+        self.assertEqual(result["status_absent_days"], 0)
+        self.assertEqual(result["extra_absent_days"], 1)
+        self.assertEqual(result["absent_days"], 1)
+
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_holidays_in_range")
+    @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_shift_for_employee")
+    def test_half_day_status_is_counted_separately_from_absent_days(
+            self, mock_shift, mock_holidays):
+        from zkteco_attendance.zkteco_attendance.attendance_processor import process_employee
+
+        mock_holidays.return_value = {}
+        mock_shift.return_value = _day_shift()
+        checkins = [
+            _mk_checkin("C1", "2026-08-10 08:00:00", "IN"),
+            _mk_checkin("C2", "2026-08-10 12:00:00", "OUT"),
+        ]
+        result = process_employee(
+            employee="EMP-HALF", from_date="2026-08-10", to_date="2026-08-10",
+            checkin_list=checkins, default_shift_name=None,
+            doc_missing_action="Mark as Invalid",
+        )
+
+        self.assertEqual(result["status_absent_days"], 0)
+        self.assertEqual(result["extra_absent_days"], 0)
+        self.assertEqual(result["absent_days"], 0)
+        self.assertEqual(result["working_days"], 0)
+        self.assertEqual(result["half_days"], 1)
 
     @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_holidays_in_range")
     @patch("zkteco_attendance.zkteco_attendance.attendance_processor.get_shift_for_employee")
