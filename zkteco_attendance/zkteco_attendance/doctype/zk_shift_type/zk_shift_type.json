@@ -30,10 +30,12 @@
         "enable_lunch_deviation",
         "lunch_start_time",
         "lunch_end_time",
-        "late_compensate_threshold",
         "column_break_lunch_dev",
         "lunch_deviation_minutes",
         "lunch_deviation_threshold",
+        "column_break_late_threshold",
+        "lunch_early_late_threshold",
+        "add_working_lunch_threshold",
         "section_overtime",
         "enable_overtime",
         "overtime_calculation_method",
@@ -226,14 +228,6 @@
             "description": "Scheduled time the employee returns from lunch (e.g. 13:00). The lunch IN check-in is matched to this time to measure deviation."
         },
         {
-            "fieldname": "late_compensate_threshold",
-            "fieldtype": "Int",
-            "label": "Threshold for Late/Compensate",
-            "default": "0",
-            "depends_on": "enable_lunch_deviation",
-            "description": "Grace minutes for the lunch late/early decision. Minutes after Lunch End Time beyond this threshold count as late entry minutes, and minutes before Lunch Start Time beyond it count as early exit minutes. Example: 10 with a 12:00 Lunch Start Time accepts an 11:57 lunch check-out."
-        },
-        {
             "fieldname": "column_break_lunch_dev",
             "fieldtype": "Column Break",
             "depends_on": "enable_lunch_deviation"
@@ -253,6 +247,27 @@
             "default": "5",
             "depends_on": "enable_lunch_deviation",
             "description": "Number of flagged days (days exceeding the allowed deviation) after which the employee is flagged on the Employee Daily Check-ins page."
+        },
+        {
+            "fieldname": "column_break_late_threshold",
+            "fieldtype": "Column Break",
+            "depends_on": "enable_lunch_deviation"
+        },
+        {
+            "fieldname": "lunch_early_late_threshold",
+            "fieldtype": "Int",
+            "label": "Threshold for Lunch Late/Early Decision (minutes)",
+            "default": "10",
+            "depends_on": "enable_lunch_deviation",
+            "description": "Grace minutes for the lunch late/early decision. Minutes after Lunch End Time beyond this threshold count as late entry minutes, and minutes before Lunch Start Time beyond it count as early exit minutes. Example: 10 with a 12:00 Lunch Start Time accepts an 11:57 lunch check-out."
+        },
+        {
+            "fieldname": "add_working_lunch_threshold",
+            "fieldtype": "Int",
+            "label": "Threshold For lunch Additional Working Minutes (minutes)",
+            "default": "10",
+            "depends_on": "enable_lunch_deviation",
+            "description": "Grace minutes for the lunch additional working minutes decision. Minutes before Lunch End Time beyond this threshold count as additional working minutes, and minutes after Lunch Start Time beyond it count as additional working minutes. Example: 10 with a 12:00 Lunch Start Time counts 12 minute for 12:12 as additional working minutes."
         },
         {
             "fieldname": "section_overtime",

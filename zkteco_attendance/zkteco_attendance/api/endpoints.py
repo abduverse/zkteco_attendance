@@ -939,6 +939,38 @@ def toggle_ignore_checkin(checkin_name):
 
 
 @frappe.whitelist()
+def update_checkin_log_type(checkin_name, log_type):
+    """
+    Flip the Log Type (IN/OUT) of an existing Employee Checkin in place.
+
+    Used by the Daily Checkins page when an edit changes nothing but the log
+    type: such a correction is applied directly instead of going through a
+    Manual Checkin Request. The punch time is never touched, so a night-shift
+    OUT keeps its own calendar date. The manual-edit audit trail is recorded
+    exactly like save_manual_checkin_record does.
+    """
+    frappe.only_for(["System Manager", "HR Manager", "Biometric Device Manager",
+                    "Checkin Editor"])
+
+    from frappe.utils import now_datetime
+
+    if not checkin_name or not frappe.db.exists("Employee Checkin", checkin_name):
+        frappe.throw(_("Invalid checkin record."))
+    if log_type not in ("IN", "OUT"):
+        frappe.throw(_("Log Type must be IN or OUT."))
+
+    doc = frappe.get_doc("Employee Checkin", checkin_name)
+    doc.log_type        = log_type
+    doc.manually_edited = 1
+    doc.edited_by       = frappe.session.user
+    doc.edited_at       = now_datetime()
+    doc.save(ignore_permissions=True)
+    frappe.db.commit()
+
+    return {"name": doc.name, "log_type": doc.log_type, "action": "updated"}
+
+
+@frappe.whitelist()
 def get_employee_shift_info(employee, work_date=None):
     """
     Return the employee's shift details for a given date.

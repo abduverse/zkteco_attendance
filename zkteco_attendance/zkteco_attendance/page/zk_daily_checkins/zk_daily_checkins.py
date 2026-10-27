@@ -43,6 +43,13 @@ def create_manual_checkin_request(employee=None, checkin_date=None, checkin_time
 
 
 @frappe.whitelist()
+def update_checkin_log_type(checkin_name, log_type):
+    """Apply a log-type-only edit to the check-in itself (no request)."""
+    from zkteco_attendance.zkteco_attendance.api.endpoints import update_checkin_log_type as _update
+    return _update(checkin_name=checkin_name, log_type=log_type)
+
+
+@frappe.whitelist()
 def toggle_ignore_checkin(checkin_name):
     from zkteco_attendance.zkteco_attendance.api.endpoints import toggle_ignore_checkin as _toggle
     return _toggle(checkin_name=checkin_name)
@@ -855,6 +862,25 @@ def _status_cell(day):
     return "".join(parts)
 
 
+def _additional_cell(day):
+    """Minutes worked beyond the shift's boundaries (before start, around
+    lunch and after end), counted once they pass the Threshold for
+    Late/Compensate — the threshold only gates, it is not deducted."""
+    minutes = flt(day.get("additional_minutes") or 0)
+    if minutes <= 0:
+        return '<span class="muted">&mdash;</span>'
+    parts = [
+        ("+" + _("Shift start"), day.get("additional_shift_start_minutes")),
+        ("+" + _("Lunch start"), day.get("additional_lunch_start_minutes")),
+        ("+" + _("Lunch end"), day.get("additional_lunch_end_minutes")),
+        ("+" + _("Shift end"), day.get("additional_shift_end_minutes")),
+    ]
+    title = _("Additional working minutes") + ": " + " + ".join(
+        "{0} {1}".format(_esc(label), int(flt(value or 0))) for label, value in parts
+    )
+    return '<span title="{0}">{1}</span>'.format(title, int(round(minutes)))
+
+
 def _ot_html(row):
     """OT chips for a day dict or an aggregated totals dict."""
     chips = []
@@ -896,11 +922,12 @@ def _checkin_chips(day):
 # ── Report building ──────────────────────────────────────────────────────────
 
 def _employee_totals(days):
-    totals = {"hours": 0.0}
+    totals = {"hours": 0.0, "additional_minutes": 0.0}
     for key, _letter, _cls, _title in _OT_META:
         totals[key] = 0.0
     for d in days:
         totals["hours"] += flt(d.get("hours") or 0)
+        totals["additional_minutes"] += flt(d.get("additional_minutes") or 0)
         for key, _letter, _cls, _title in _OT_META:
             totals[key] += flt(d.get(key) or 0)
     return totals
@@ -917,12 +944,14 @@ def _employee_table(emp):
             '<td>{2}</td>'
             '<td class="num">{3}</td>'
             '<td class="num">{4}</td>'
-            '<td class="ot-cell">{5}</td>'
-            '<td class="ck-cell">{6}</td>'
+            '<td class="num">{5}</td>'
+            '<td class="ot-cell">{6}</td>'
+            '<td class="ck-cell">{7}</td>'
             '</tr>'.format(
                 _fmt_date(d.get("date")),
                 _esc(_(cstr(d.get("weekday") or ""))),
                 _status_cell(d),
+                _additional_cell(d),
                 _dec(d.get("hours")),
                 _hhmm(d.get("hours")),
                 _ot_html(d),
@@ -938,10 +967,12 @@ def _employee_table(emp):
             '<td colspan="3">{0}</td>'
             '<td class="num">{1}</td>'
             '<td class="num">{2}</td>'
-            '<td class="ot-cell">{3}</td>'
+            '<td class="num">{3}</td>'
+            '<td class="ot-cell">{4}</td>'
             '<td></td>'
             '</tr>'.format(
                 _("Period total"),
+                _dec(totals["additional_minutes"], 0),
                 _dec(totals["hours"]),
                 _hhmm(totals["hours"]),
                 _ot_html(totals),
@@ -953,12 +984,12 @@ def _employee_table(emp):
         '<thead><tr>'
         '<th>{0}</th><th>{1}</th><th>{2}</th>'
         '<th class="num">{3}</th><th class="num">{4}</th>'
-        '<th>{5}</th><th>{6}</th>'
+        '<th class="num">{5}</th><th>{6}</th><th>{7}</th>'
         '</tr></thead>'
-        '<tbody>{7}{8}</tbody>'
+        '<tbody>{8}{9}</tbody>'
         '</table>'.format(
             _("Date"), _("Day"), _("Status"),
-            _("Hours"), _("Formatted Hours"),
+            _("Add. Work (min)"), _("Hours"), _("Formatted Hours"),
             _("OT Breakdown"), _("Check-ins"),
             "".join(rows), totals_html,
         )
@@ -1058,7 +1089,7 @@ def _render_pdf_html(data):
             _("Hours = decimal hours, Formatted Hours = clock time (e.g. 7.60 / 7:36)."),
             _("OT: D = Day, N = Night, W = Weekend, H = Holiday overtime."),
             _("Markers"),
-            _("L-EN / E-EX = late entry / early exit beyond grace. <b>*</b> = manually edited. <s>struck out</s> = ignored check-in."),
+            _("L-EN / E-EX = late entry / early exit beyond grace. AWM = additional working minutes beyond the shift boundaries, counted once past the late/compensate threshold. <b>*</b> = manually edited. <s>struck out</s> = ignored check-in."),
         )
     )
 
@@ -1118,6 +1149,7 @@ _EXCEL_DAILY_COLUMNS = (
     ("overtime_hours",  _("Total OT")),
     ("late_minutes",    _("Late (min)")),
     ("early_minutes",   _("Early (min)")),
+    ("additional_minutes", _("Add. Work (min)")),
     ("holiday_name",    _("Holiday Name")),
     ("checkins",        _("Check-ins")),
 )
@@ -1151,7 +1183,8 @@ _EXCEL_COLUMN_WIDTHS = {
     "date": 12, "weekday": 10, "status": 14, "hours": 10, "formatted": 14,
     "day_ot_hours": 10, "night_ot_hours": 10, "weekend_ot_hours": 12,
     "holiday_ot_hours": 12, "overtime_hours": 10, "late_minutes": 10,
-    "early_minutes": 10, "holiday_name": 18, "checkins": 46,
+    "early_minutes": 10, "additional_minutes": 12,
+    "holiday_name": 18, "checkins": 46,
     "working_days": 12, "absent_days": 12, "invalid_days": 12,
     "review_days": 12, "total_hours": 10,
 }
@@ -1310,6 +1343,7 @@ def _build_excel_workbook(data):
                 "overtime_hours":  flt(d.get("overtime_hours") or 0),
                 "late_minutes":    int(flt(d.get("late_minutes") or 0)),
                 "early_minutes":   int(flt(d.get("early_minutes") or 0)),
+                "additional_minutes": round(flt(d.get("additional_minutes") or 0), 1),
                 "holiday_name":    d.get("holiday_name") or "",
                 "checkins":        _checkins_text(d.get("checkins")),
             }

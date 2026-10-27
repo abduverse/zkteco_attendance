@@ -943,6 +943,19 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
         return badges.join("");
     }
 
+    // Additional working minutes — time worked beyond the shift's four
+    // boundaries, counted when it passes the 'Threshold for Late/Compensate'
+    // (the threshold gates, it is not deducted). The title lists the parts.
+    function additional_minutes_cell(d) {
+        const mins = Number(d.additional_minutes || 0);
+        if (!mins) {
+            return `<span class="text-muted">—</span>`;
+        }
+        const label = `${mins % 1 ? mins.toFixed(1) : mins}`;
+        const title = `${__("Additional working minutes")}: ${label} (${__("Before shift start")}: ${d.additional_shift_start_minutes || 0} ${__("min")} + ${__("After lunch start")}: ${d.additional_lunch_start_minutes || 0} ${__("min")} + ${__("Before lunch end")}: ${d.additional_lunch_end_minutes || 0} ${__("min")} + ${__("After shift end")}: ${d.additional_shift_end_minutes || 0} ${__("min")})`;
+        return `<span class="zk-grace-badge" title="${title}" style="border:1px solid #2a7bb0;background-color:#c8e6ff;color:#0b4d75;border-radius:4px;padding:1px 4px;font-size:0.72rem;font-weight:600;">${label}</span>`;
+    }
+
     // Lunch deviation — minutes away from the shift's scheduled lunch
     // start/end. Highlighted when the day exceeds the allowed deviation.
     // Nothing is measured when the shift disables lunch deviation.
@@ -1062,6 +1075,7 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                     <td style="border: 1px solid #385068;">${__(d.weekday)}</td>
                     <td style="border: 1px solid #385068;"><span class="indicator-pill ${status_color(d.status)}">${__(d.status)}</span><br>${grace_badges(d)}</td>
                     <td class="text-right" style="border: 1px solid #385068;">${lunch_deviation_cell(d, lunchDevEnabled)}</td>
+                    <td class="text-right" style="border: 1px solid #385068;">${additional_minutes_cell(d)}</td>
                     <td class="text-right" style="border: 1px solid #385068;">${(d.hours||0).toFixed(2)}${'('}${format_hours_hhmm(d.hours)}${')'}</td>
                     
                     <td class="text-right ${d.overtime_hours ? 'text-warning' : ''}" style="border: 1px solid #385068;">${ot_cell(d)}</td>
@@ -1077,6 +1091,7 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                         <th style="width:90px; border: 1px solid #385068; background-color: #8bc2f8;">${__("Day")}</th>
                         <th style="width:120px; border: 1px solid #385068; background-color: #8bc2f8;">${__("Status")}</th>
                         <th style="width:90px; border: 1px solid #385068; background-color: #8bc2f8;" class="text-right">${__("Lunch Dev (min)")}</th>
+                        <th style="width:90px; border: 1px solid #385068; background-color: #8bc2f8;" class="text-right">${__("Add. Work (min)")}</th>
                         <th style="width:70px; border: 1px solid #385068; background-color: #8bc2f8;" class="text-right">${__("Hours")}</th>
                         <th style="width:160px; border: 1px solid #385068; background-color: #8bc2f8;" class="text-right">${__("OT Breakdown")}</th>
                         <th style="border: 1px solid #385068; background-color: #8bc2f8;">${__("Check-ins")}</th>
@@ -1113,6 +1128,7 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                     <span class="zk-ot-chip zk-ot-late">L-EN: ${__("Late Entry")}</span>
                     <span class="zk-ot-chip zk-ot-early">E-EX: ${__("Early Exit")}</span>
                     <span class="zk-ot-chip zk-ot-late">LD: ${__("Lunch Deviation (min)")}</span>
+                    <span class="zk-ot-chip zk-ot-day">AWM: ${__("Additional Working Minutes")}</span>
                     <span class="zk-ot-chip zk-ot-day">WD: ${__("Working Days")}</span>
                     <span class="zk-ot-chip zk-ot-holiday">AD: ${__("Absent Days")}</span>
                     <span class="zk-ot-chip zk-ot-night">○: ${__("Ignore Button")}</span>
@@ -1372,6 +1388,43 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
 
         const isMakePresent = mode === "make_present";
 
+        // ── Log-type-only edits ─────────────────────────────────────────
+        // Editing an existing check-in just to flip IN -> OUT (or back) is
+        // applied directly to the check-in: there is nothing to review, so
+        // no Manual Checkin Request is created for it.
+        const original_date     = date;
+        const original_time     = normalize_time(defaultTime);
+        const original_log_type = String(logtype || "IN").toUpperCase();
+
+        function is_only_log_type_change(vals) {
+            if (mode !== "edit" || !checkin_name) return false;
+            if ((vals.request_type || "") !== "Edit") return false;
+            if (!["IN", "OUT"].includes(vals.log_type)) return false;
+            if (String(vals.log_type).toUpperCase() === original_log_type) return false;
+            if (vals.checkin_date !== original_date) return false;
+            if (normalize_time(vals.checkin_time) !== original_time) return false;
+            if ((vals.is_overtime ? 1 : 0) !== isOT) return false;
+            return !String(vals.zk_remark || "").trim();
+        }
+
+        function apply_log_type_directly(vals) {
+            frappe.call({
+                method: "zkteco_attendance.zkteco_attendance.page.zk_daily_checkins.zk_daily_checkins.update_checkin_log_type",
+                args: { checkin_name: checkin_name, log_type: vals.log_type },
+                freeze: true,
+                freeze_message: __("Updating log type…"),
+                callback(r) {
+                    if (!r.message) return;
+                    d.hide();
+                    frappe.show_alert({
+                        message: __("Check-in updated to {0}.", [vals.log_type]),
+                        indicator: "green",
+                    }, 5);
+                    trigger_load();
+                },
+            });
+        }
+
         const d = new frappe.ui.Dialog({
             title: mode === "edit" ? __("Edit Check-in")
                 : isMakePresent ? __("Make Present") : __("Add Check-in"),
@@ -1407,6 +1460,12 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
             primary_action(vals) {
                 if (!vals.checkin_date || !vals.checkin_time) {
                     frappe.msgprint(__("Date and Time are required."));
+                    return;
+                }
+                // A log-type-only correction is written straight to the
+                // check-in instead of creating a request document.
+                if (is_only_log_type_change(vals)) {
+                    apply_log_type_directly(vals);
                     return;
                 }
                 const makePresent = (vals.request_type || "") === "Make Present";
@@ -1472,6 +1531,29 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
         };
         d.fields_dict.request_type.$input.on("change", toggle_make_present_fields);
         toggle_make_present_fields();
+
+        // The primary button applies a log-type-only edit directly, so its
+        // label follows what clicking it will actually do.
+        const refresh_primary_action = () => {
+            if (mode !== "edit") return;
+            const btn = d.get_primary_btn && d.get_primary_btn();
+            if (!btn || !btn.length) return;
+            const vals = d.get_values() || {};
+            btn.text(is_only_log_type_change({
+                request_type: vals.request_type,
+                log_type:     vals.log_type,
+                checkin_date: vals.checkin_date,
+                checkin_time: vals.checkin_time,
+                is_overtime:  vals.is_overtime,
+                zk_remark:    vals.zk_remark,
+            }) ? __("Update Log Type") : __("Create Request"));
+        };
+        ["log_type", "checkin_time", "checkin_date", "is_overtime", "zk_remark", "request_type"]
+            .forEach((fname) => {
+                const f = d.get_field(fname);
+                if (f && f.$input) f.$input.on("change", refresh_primary_action);
+            });
+        refresh_primary_action();
 
         d.show();
         // Fetch shift info after dialog DOM is fully rendered

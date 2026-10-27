@@ -137,6 +137,10 @@ def _process_background(summary_name):
             row.half_days           = 0
             row.total_working_hours = 0
             row.absent_hours        = 0
+            row.late_shift_minutes  = 0
+            row.late_lunch_minutes  = 0
+            row.late_hours          = 0
+            row.additional_working_hours = 0
             row.overtime_hours      = 0
             row.day_ot_hours        = 0
             row.night_ot_hours      = 0
@@ -161,7 +165,13 @@ def _process_background(summary_name):
         row.absent_days         = result["absent_days"]
         row.half_days           = result["half_days"]
         row.total_working_hours = result["total_working_hours"]
+        # Absent hours already net of the period's late and additional hours
+        # (see process_employee).
         row.absent_hours        = result["absent_hours"]
+        row.late_shift_minutes  = result.get("late_shift_minutes", 0.0)
+        row.late_lunch_minutes  = result.get("late_lunch_minutes", 0.0)
+        row.late_hours          = result.get("late_hours", 0.0)
+        row.additional_working_hours = result.get("additional_working_hours", 0.0)
         row.overtime_hours      = result["overtime_hours"]
         row.day_ot_hours        = result.get("day_ot_hours", 0.0)
         row.night_ot_hours      = result.get("night_ot_hours", 0.0)

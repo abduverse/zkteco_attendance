@@ -17,6 +17,12 @@
         "half_days",
         "total_working_hours",
         "absent_hours",
+        "late_sec",
+        "late_shift_minutes",
+        "late_lunch_minutes",
+        "late_col",
+        "late_hours",
+        "additional_working_hours",
         "overtime_sec",
         "overtime_hours",
         "day_ot_hours",
@@ -131,7 +137,53 @@
             "fieldtype": "Float",
             "label": "Absent Hours",
             "read_only": 1,
-            "columns": 1
+            "columns": 1,
+            "description": "Recorded absent hours minus the total late hours and the total additional working hours of the period."
+        },
+        {
+            "fieldname": "late_sec",
+            "fieldtype": "Section Break",
+            "label": "Late & Additional Working Time"
+        },
+        {
+            "fieldname": "late_shift_minutes",
+            "fieldtype": "Float",
+            "label": "Late Entry (Shift Start) Min",
+            "read_only": 1,
+            "in_list_view": 1,
+            "columns": 1,
+            "description": "Minutes the first check-in was late beyond Late Entry Grace."
+        },
+        {
+            "fieldname": "late_lunch_minutes",
+            "fieldtype": "Float",
+            "label": "Late Return (Lunch End) Min",
+            "read_only": 1,
+            "in_list_view": 1,
+            "columns": 1,
+            "description": "Minutes the lunch check-in was late beyond the shift's Threshold for Late/Compensate."
+        },
+        {
+            "fieldname": "late_col",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "late_hours",
+            "fieldtype": "Float",
+            "label": "Late Hours",
+            "read_only": 1,
+            "in_list_view": 1,
+            "columns": 1,
+            "description": "Total late minutes (shift start + lunch end) converted to hours."
+        },
+        {
+            "fieldname": "additional_working_hours",
+            "fieldtype": "Float",
+            "label": "Additional Working Hours",
+            "read_only": 1,
+            "in_list_view": 1,
+            "columns": 1,
+            "description": "Minutes worked beyond the shift's boundaries (before start, after lunch start, before lunch end, after end), counted once they pass the Threshold for Late/Compensate (the threshold only decides whether a boundary counts, it is not deducted), converted to hours."
         },
         {
             "fieldname": "overtime_sec",
