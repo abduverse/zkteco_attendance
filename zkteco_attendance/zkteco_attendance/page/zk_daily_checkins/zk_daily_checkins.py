@@ -862,10 +862,23 @@ def _status_cell(day):
     return "".join(parts)
 
 
+def _lunch_deviation_cell(day):
+    """Minutes away from the shift's scheduled lunch window.  Highlighted
+    (bold, warning colour) when the day exceeds the shift's allowed
+    deviation, which is what flags the employee on the page."""
+    minutes = flt(day.get("lunch_deviation") or 0)
+    if minutes <= 0:
+        return '<span class="muted">&mdash;</span>'
+    label = ("{0:.1f}".format(minutes) if minutes % 1 else str(int(minutes)))
+    if day.get("is_lunch_deviation"):
+        return '<span class="warn">{0}</span>'.format(_esc(label))
+    return label
+
+
 def _additional_cell(day):
     """Minutes worked beyond the shift's boundaries (before start, around
-    lunch and after end), counted once they pass the Threshold for
-    Late/Compensate — the threshold only gates, it is not deducted."""
+    lunch and after end), counted once they pass the shift's add_working_lunch_threshold
+    — the threshold only gates, it is not deducted."""
     minutes = flt(day.get("additional_minutes") or 0)
     if minutes <= 0:
         return '<span class="muted">&mdash;</span>'
@@ -922,12 +935,13 @@ def _checkin_chips(day):
 # ── Report building ──────────────────────────────────────────────────────────
 
 def _employee_totals(days):
-    totals = {"hours": 0.0, "additional_minutes": 0.0}
+    totals = {"hours": 0.0, "additional_minutes": 0.0, "lunch_deviation": 0.0}
     for key, _letter, _cls, _title in _OT_META:
         totals[key] = 0.0
     for d in days:
         totals["hours"] += flt(d.get("hours") or 0)
         totals["additional_minutes"] += flt(d.get("additional_minutes") or 0)
+        totals["lunch_deviation"] += flt(d.get("lunch_deviation") or 0)
         for key, _letter, _cls, _title in _OT_META:
             totals[key] += flt(d.get(key) or 0)
     return totals
@@ -945,12 +959,14 @@ def _employee_table(emp):
             '<td class="num">{3}</td>'
             '<td class="num">{4}</td>'
             '<td class="num">{5}</td>'
-            '<td class="ot-cell">{6}</td>'
-            '<td class="ck-cell">{7}</td>'
+            '<td class="num">{6}</td>'
+            '<td class="ot-cell">{7}</td>'
+            '<td class="ck-cell">{8}</td>'
             '</tr>'.format(
                 _fmt_date(d.get("date")),
                 _esc(_(cstr(d.get("weekday") or ""))),
                 _status_cell(d),
+                _lunch_deviation_cell(d),
                 _additional_cell(d),
                 _dec(d.get("hours")),
                 _hhmm(d.get("hours")),
@@ -968,10 +984,12 @@ def _employee_table(emp):
             '<td class="num">{1}</td>'
             '<td class="num">{2}</td>'
             '<td class="num">{3}</td>'
-            '<td class="ot-cell">{4}</td>'
+            '<td class="num">{4}</td>'
+            '<td class="ot-cell">{5}</td>'
             '<td></td>'
             '</tr>'.format(
                 _("Period total"),
+                _dec(totals["lunch_deviation"], 0),
                 _dec(totals["additional_minutes"], 0),
                 _dec(totals["hours"]),
                 _hhmm(totals["hours"]),
@@ -984,12 +1002,14 @@ def _employee_table(emp):
         '<thead><tr>'
         '<th>{0}</th><th>{1}</th><th>{2}</th>'
         '<th class="num">{3}</th><th class="num">{4}</th>'
-        '<th class="num">{5}</th><th>{6}</th><th>{7}</th>'
+        '<th class="num">{5}</th><th class="num">{6}</th>'
+        '<th>{7}</th><th>{8}</th>'
         '</tr></thead>'
-        '<tbody>{8}{9}</tbody>'
+        '<tbody>{9}{10}</tbody>'
         '</table>'.format(
             _("Date"), _("Day"), _("Status"),
-            _("Add. Work (min)"), _("Hours"), _("Formatted Hours"),
+            _("Lunch Dev (min)"), _("Add. Work (min)"),
+            _("Hours"), _("Formatted Hours"),
             _("OT Breakdown"), _("Check-ins"),
             "".join(rows), totals_html,
         )
@@ -1017,6 +1037,12 @@ def _employee_block(emp):
     if emp.get("shift_type"):
         badges.append('<span class="emp-badge"><b>{0}</b> {1}</span>'.format(
             _("Shift"), _esc(emp.get("shift_type"))))
+    if emp.get("lunch_deviation_enabled"):
+        badges.append('<span class="emp-badge"><b>{0}</b> {1}</span>'.format(
+            _("Lunch deviation"), _esc("{0} {1} / {2} {3} ({4} {5})".format(
+                int(flt(emp.get("lunch_deviation_days") or 0)), _("day(s)"),
+                int(flt(emp.get("lunch_deviation_minutes") or 0)), _("min"),
+                _("allowed"), int(flt(emp.get("lunch_deviation_threshold") or 0))))))
 
     return (
         '<div class="emp-block">'
@@ -1080,16 +1106,16 @@ def _render_pdf_html(data):
 
     legend = (
         '<table class="legend-table"><tr>'
-        '<td width="33%"><div class="lg-label">{0}</div>{1}</td>'
-        '<td width="33%"><div class="lg-label">{2}</div>{3}<div class="lg-sub">{4}</div></td>'
+        '<td width="30%"><div class="lg-label">{0}</div>{1}</td>'
+        '<td width="36%"><div class="lg-label">{2}</div>{3}<div class="lg-sub">{4}</div></td>'
         '<td width="34%"><div class="lg-label">{5}</div>{6}</td>'
         '</tr></table>'.format(
             _("Status"), status_samples,
             _("Columns"),
-            _("Hours = decimal hours, Formatted Hours = clock time (e.g. 7.60 / 7:36)."),
+            _("Hours = decimal hours, Formatted Hours = clock time (e.g. 7.60 / 7:36). Lunch Dev = minutes away from the scheduled lunch window. Add. Work = minutes worked beyond the shift boundaries (before start, around lunch, after end)."),
             _("OT: D = Day, N = Night, W = Weekend, H = Holiday overtime."),
             _("Markers"),
-            _("L-EN / E-EX = late entry / early exit beyond grace. AWM = additional working minutes beyond the shift boundaries, counted once past the late/compensate threshold. <b>*</b> = manually edited. <s>struck out</s> = ignored check-in."),
+            _("L-EN / E-EX = late entry / early exit beyond grace, with the minutes remaining after grace. Bold = lunch deviation beyond the shift's allowed minutes. <b>*</b> = manually edited. <s>struck out</s> = ignored check-in."),
         )
     )
 
@@ -1140,6 +1166,13 @@ _EXCEL_DAILY_COLUMNS = (
     ("date",            _("Date")),
     ("weekday",         _("Day")),
     ("status",          _("Status")),
+    ("lunch_deviation", _("Lunch Dev (min)")),
+    ("lunch_deviation_flag", _("Lunch Dev Flag")),
+    ("additional_minutes", _("Add. Work (min)")),
+    ("additional_shift_start_minutes", _("Add: Before Start (min)")),
+    ("additional_lunch_start_minutes", _("Add: After Lunch Start (min)")),
+    ("additional_lunch_end_minutes", _("Add: Before Lunch End (min)")),
+    ("additional_shift_end_minutes", _("Add: After End (min)")),
     ("hours",           _("Hours")),
     ("formatted",       _("Formatted Hours")),
     ("day_ot_hours",    _("Day OT")),
@@ -1149,7 +1182,10 @@ _EXCEL_DAILY_COLUMNS = (
     ("overtime_hours",  _("Total OT")),
     ("late_minutes",    _("Late (min)")),
     ("early_minutes",   _("Early (min)")),
-    ("additional_minutes", _("Add. Work (min)")),
+    ("late_shift_minutes", _("Late: Shift Start (min)")),
+    ("late_lunch_minutes", _("Late: Lunch End (min)")),
+    ("early_lunch_minutes", _("Early: Lunch Start (min)")),
+    ("early_shift_minutes", _("Early: Shift End (min)")),
     ("holiday_name",    _("Holiday Name")),
     ("checkins",        _("Check-ins")),
 )
@@ -1164,9 +1200,16 @@ _EXCEL_SUMMARY_COLUMNS = (
     ("attendance_device_id", _("Device ID")),
     ("shift_type",      _("Shift")),
     ("working_days",    _("Working Days")),
+    ("half_days",       _("Half Days")),
     ("absent_days",     _("Absent Days")),
     ("late_minutes",    _("Late (min)")),
     ("early_minutes",   _("Early (min)")),
+    ("late_shift_minutes", _("Late: Shift Start (min)")),
+    ("late_lunch_minutes", _("Late: Lunch End (min)")),
+    ("lunch_deviation_days", _("Lunch Dev Days")),
+    ("lunch_deviation_minutes", _("Lunch Dev (min)")),
+    ("additional_minutes", _("Add. Work (min)")),
+    ("additional_hours", _("Add. Work (hrs)")),
     ("invalid_days",    _("Invalid Days")),
     ("review_days",     _("Review Needed")),
     ("total_hours",     _("Total Hours")),
@@ -1181,12 +1224,19 @@ _EXCEL_COLUMN_WIDTHS = {
     "employee": 12, "employee_name": 22, "department": 16, "designation": 16,
     "zk_biometric_device": 12, "attendance_device_id": 12, "shift_type": 14,
     "date": 12, "weekday": 10, "status": 14, "hours": 10, "formatted": 14,
+    "lunch_deviation": 14, "lunch_deviation_flag": 14,
     "day_ot_hours": 10, "night_ot_hours": 10, "weekend_ot_hours": 12,
     "holiday_ot_hours": 12, "overtime_hours": 10, "late_minutes": 10,
     "early_minutes": 10, "additional_minutes": 12,
+    "additional_shift_start_minutes": 14, "additional_lunch_start_minutes": 16,
+    "additional_lunch_end_minutes": 16, "additional_shift_end_minutes": 14,
+    "late_shift_minutes": 14, "late_lunch_minutes": 14,
+    "early_lunch_minutes": 14, "early_shift_minutes": 14,
     "holiday_name": 18, "checkins": 46,
-    "working_days": 12, "absent_days": 12, "invalid_days": 12,
+    "working_days": 12, "half_days": 10, "absent_days": 12, "invalid_days": 12,
     "review_days": 12, "total_hours": 10,
+    "lunch_deviation_days": 14, "lunch_deviation_minutes": 14,
+    "additional_hours": 12,
 }
 
 
@@ -1213,9 +1263,16 @@ def _employee_summary(emp):
     days = emp.get("days") or []
     summary = {
         "working_days": 0.0,
+        "half_days":    0,
         "absent_days":  0,
         "late_minutes": 0,
         "early_minutes": 0,
+        "late_shift_minutes": 0,
+        "late_lunch_minutes": 0,
+        "lunch_deviation_days": 0,
+        "lunch_deviation_minutes": 0.0,
+        "additional_minutes": 0.0,
+        "additional_hours": 0.0,
         "invalid_days": 0,
         "review_days":  0,
         "total_hours":  0.0,
@@ -1231,6 +1288,7 @@ def _employee_summary(emp):
             summary["working_days"] += 1.0
         elif status == "Half Day":
             summary["working_days"] += 0.5
+            summary["half_days"] += 1
         elif status == "Absent":
             summary["absent_days"] += 1
         elif status == "Invalid":
@@ -1242,6 +1300,12 @@ def _employee_summary(emp):
 
         summary["late_minutes"]  += int(flt(d.get("late_minutes") or 0))
         summary["early_minutes"] += int(flt(d.get("early_minutes") or 0))
+        summary["late_shift_minutes"] += round(flt(d.get("late_shift_minutes") or 0), 1)
+        summary["late_lunch_minutes"] += round(flt(d.get("late_lunch_minutes") or 0), 1)
+        summary["lunch_deviation_minutes"] += round(flt(d.get("lunch_deviation") or 0), 1)
+        if d.get("is_lunch_deviation"):
+            summary["lunch_deviation_days"] += 1
+        summary["additional_minutes"] += round(flt(d.get("additional_minutes") or 0), 1)
 
         summary["total_hours"] += flt(d.get("hours") or 0)
         summary["day_ot_hours"]     += flt(d.get("day_ot_hours") or 0)
@@ -1249,6 +1313,10 @@ def _employee_summary(emp):
         summary["weekend_ot_hours"] += flt(d.get("weekend_ot_hours") or 0)
         summary["holiday_ot_hours"] += flt(d.get("holiday_ot_hours") or 0)
         summary["overtime_hours"]   += flt(d.get("overtime_hours") or 0)
+
+    summary["additional_hours"] = round(summary["additional_minutes"] / 60.0, 2)
+    summary["lunch_deviation_minutes"] = round(summary["lunch_deviation_minutes"], 1)
+    summary["additional_minutes"] = round(summary["additional_minutes"], 1)
     return summary
 
 
@@ -1334,6 +1402,8 @@ def _build_excel_workbook(data):
                 "date":            cstr(d.get("date") or ""),
                 "weekday":         _(cstr(d.get("weekday") or "")),
                 "status":          _(cstr(d.get("status") or "")),
+                "lunch_deviation": round(flt(d.get("lunch_deviation") or 0), 1),
+                "lunch_deviation_flag": _("Yes") if d.get("is_lunch_deviation") else "",
                 "hours":           flt(d.get("hours") or 0),
                 "formatted":       _hhmm(d.get("hours")),
                 "day_ot_hours":    flt(d.get("day_ot_hours") or 0),
@@ -1343,7 +1413,15 @@ def _build_excel_workbook(data):
                 "overtime_hours":  flt(d.get("overtime_hours") or 0),
                 "late_minutes":    int(flt(d.get("late_minutes") or 0)),
                 "early_minutes":   int(flt(d.get("early_minutes") or 0)),
+                "late_shift_minutes": round(flt(d.get("late_shift_minutes") or 0), 1),
+                "late_lunch_minutes": round(flt(d.get("late_lunch_minutes") or 0), 1),
+                "early_lunch_minutes": round(flt(d.get("early_lunch_minutes") or 0), 1),
+                "early_shift_minutes": round(flt(d.get("early_shift_minutes") or 0), 1),
                 "additional_minutes": round(flt(d.get("additional_minutes") or 0), 1),
+                "additional_shift_start_minutes": round(flt(d.get("additional_shift_start_minutes") or 0), 1),
+                "additional_lunch_start_minutes": round(flt(d.get("additional_lunch_start_minutes") or 0), 1),
+                "additional_lunch_end_minutes": round(flt(d.get("additional_lunch_end_minutes") or 0), 1),
+                "additional_shift_end_minutes": round(flt(d.get("additional_shift_end_minutes") or 0), 1),
                 "holiday_name":    d.get("holiday_name") or "",
                 "checkins":        _checkins_text(d.get("checkins")),
             }
@@ -1386,19 +1464,15 @@ def _build_excel_workbook(data):
                 cell.number_format = "0.00"
         r += 1
 
-    # Grand totals row
+    # Grand totals row — every summary column is summed, so new columns are
+    # picked up automatically from the per-employee aggregates.
     if employees:
-        grand = {
-            "working_days": 0.0, "absent_days": 0, "late_minutes": 0,
-            "early_minutes": 0, "invalid_days": 0,
-            "review_days": 0, "total_hours": 0.0, "day_ot_hours": 0.0,
-            "night_ot_hours": 0.0, "weekend_ot_hours": 0.0,
-            "holiday_ot_hours": 0.0, "overtime_hours": 0.0,
-        }
+        grand = _employee_summary({"days": []})
         for emp in employees:
             s = _employee_summary(emp)
             for key in grand:
                 grand[key] += s[key]
+        grand["additional_hours"] = round(grand["additional_minutes"] / 60.0, 2)
 
         grand_fill  = PatternFill("solid", fgColor="E6EDF5")
         grand_font  = Font(bold=True, color="16324F")

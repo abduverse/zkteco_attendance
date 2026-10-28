@@ -1139,7 +1139,6 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                     ${periodDays
                         ? `&nbsp;|&nbsp; ${__("{0}/{1} possible working days", [periodDays.possibleWorkingDays, periodDays.totalDays])}`
                         : ""}
-                    &nbsp;|&nbsp; ${__("{0} possible working days", [])}
                     ${data.attendance_summary
                         ? `&nbsp;|&nbsp; <a href="/app/attendance-summary/${encodeURIComponent(data.attendance_summary)}">${frappe.utils.escape_html(data.attendance_summary)}</a>`
                         : ""}

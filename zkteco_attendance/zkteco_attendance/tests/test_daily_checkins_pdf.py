@@ -158,6 +158,45 @@ class TestDailyCheckinsPdfRenderer(unittest.TestCase):
         self.assertIn("DEV-01", html)            # device badge
         self.assertIn("General", html)           # shift badge
 
+    def test_render_pdf_html_lunch_deviation_and_additional_work(self):
+        """The PDF exposes the lunch deviation column, flags the days beyond
+        the allowed minutes and shows the additional working minutes."""
+        data = {
+            "attendance_summary": "SUM-0001",
+            "company": "Acme Inc",
+            "from_date": "2026-08-03",
+            "to_date": "2026-08-03",
+            "employees": [_employee(
+                lunch_deviation_enabled=True,
+                lunch_deviation_days=1,
+                lunch_deviation_minutes=18.0,
+                lunch_deviation_threshold=5,
+                days=[
+                    _day("2026-08-03", hours=8.5,
+                         lunch_deviation=18.0, is_lunch_deviation=True,
+                         additional_minutes=80.0,
+                         additional_shift_start_minutes=10.0,
+                         additional_lunch_start_minutes=5.0,
+                         additional_lunch_end_minutes=0.0,
+                         additional_shift_end_minutes=65.0),
+                    _day("2026-08-04", hours=7.0, lunch_deviation=4.0),
+                ],
+            )],
+        }
+        html = _render_pdf_html(data)
+
+        self.assertIn("Lunch Dev (min)", html)
+        self.assertIn("Add. Work (min)", html)
+        # Day beyond the allowed deviation is flagged
+        self.assertIn('<span class="warn">18</span>', html)
+        # Within the allowed deviation: plain number, no warning class
+        self.assertIn(">4</td>", html)
+        # Additional working minutes for the day and for the period
+        self.assertIn(">80</td>", html)
+        # Employee header badge summarises the deviation for the period
+        self.assertIn("Lunch deviation", html)
+        self.assertIn("1 day(s) / 18 min", html)
+
     def test_render_pdf_html_escapes_user_data(self):
         """Names and free-text fields must never leak raw HTML into the PDF."""
         data = _sample_data()
