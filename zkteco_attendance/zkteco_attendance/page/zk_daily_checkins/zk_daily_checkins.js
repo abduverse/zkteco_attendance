@@ -1101,11 +1101,32 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
             </table>`;
     }
 
+    function get_period_working_day_counts(fromDate, toDate) {
+        const start = Date.parse(`${fromDate}T00:00:00Z`);
+        const end = Date.parse(`${toDate}T00:00:00Z`);
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
+            return null;
+        }
+
+        const dayMs = 24 * 60 * 60 * 1000;
+        const totalDays = Math.floor((end - start) / dayMs) + 1;
+        let possibleWorkingDays = 0;
+        for (let day = start; day <= end; day += dayMs) {
+            if (new Date(day).getUTCDay() !== 0) {
+                possibleWorkingDays += 1;
+            }
+        }
+
+        return { possibleWorkingDays, totalDays };
+    }
+
     function render_data(data) {
         if (!data.employees || !data.employees.length) {
             render_empty_state(__("No employees found for the selected range."));
             return;
         }
+
+        const periodDays = get_period_working_day_counts(data.from_date, data.to_date);
 
         const header = `
             <div class="zk-daily-header" style="margin-bottom:14px;">
@@ -1115,6 +1136,9 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                     <b>${frappe.datetime.str_to_user(data.to_date)}</b>
                     ${data.company ? "&nbsp;|&nbsp;" + frappe.utils.escape_html(data.company) : ""}
                     &nbsp;|&nbsp; ${__("{0} employee(s)", [data.employees.length])}
+                    ${periodDays
+                        ? `&nbsp;|&nbsp; ${__("{0}/{1} possible working days", [periodDays.possibleWorkingDays, periodDays.totalDays])}`
+                        : ""}
                     &nbsp;|&nbsp; ${__("{0} possible working days", [])}
                     ${data.attendance_summary
                         ? `&nbsp;|&nbsp; <a href="/app/attendance-summary/${encodeURIComponent(data.attendance_summary)}">${frappe.utils.escape_html(data.attendance_summary)}</a>`
@@ -1147,12 +1171,12 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
             // processor scores them: Present = 1, Half Day = 0.5, Absent = 1.
             // Sundays (weekly rest) are excluded; public holidays count as
             // paid days off, so they add to working days.
-            let workingDays = 0, absentDays = 0;
+            let workingDays = 0, absentDays = 0, halfDays = 0;
             (emp.days||[]).forEach(d => {
                 if (d.is_weekend) return;               // Sunday weekly rest — never counts
                 if (d.is_holiday) { workingDays += 1; return; }  // paid day off
                 if (d.status === "Present")      workingDays += 1;
-                else if (d.status === "Half Day") { workingDays += 0.5; absentDays += 0.5; }
+                else if (d.status === "Half Day") { halfDays += 0.5; }
                 else if (d.status === "Absent")   absentDays += 1;
             });
             const statsLabel = `
@@ -1161,6 +1185,9 @@ frappe.pages["zk-daily-checkins"].on_page_load = function (wrapper) {
                 </span>
                 <span class="zk-ot-chip zk-ot-holiday" title="${__("Absent Days")}" style="border: 1px solid #683848; background-color: #f88bc5; border-radius: 4px; padding: 2px 4px;">
                     ${__("AD")}: ${absentDays % 1 ? absentDays.toFixed(1) : absentDays}
+                </span>
+                <span class="zk-ot-chip zk-ot-holiday" title="${__("Half Days")}" style="border: 1px solid #a05a12; background-color: #ffe0b2; border-radius: 4px; padding: 2px 4px;">
+                    ${__("HD")}: ${halfDays}
                 </span>`;
             // Employee flag: more flagged lunch days than the shift's threshold
             const lunchDeviationLabel = emp.lunch_deviation_flagged
