@@ -1870,7 +1870,7 @@ class TestLunchDeviation(unittest.TestCase):
         """Returning past Lunch End + threshold adds to the late entry minutes."""
         from zkteco_attendance.zkteco_attendance.attendance_processor import classify_day
 
-        shift = self._shift(late_compensate_threshold=10)
+        shift = self._shift(lunch_early_late_threshold=10)
         checkins = [
             _mk_checkin("C1", "2026-08-10 08:00:00", "IN"),
             _mk_checkin("C2", "2026-08-10 12:00:00", "OUT"),
@@ -1898,14 +1898,14 @@ class TestLunchDeviation(unittest.TestCase):
         ]
         work_date = get_datetime("2026-08-10").date()
 
-        within = classify_day(checkins, self._shift(late_compensate_threshold=10),
+        within = classify_day(checkins, self._shift(lunch_early_late_threshold=10),
                               "Mark as Invalid", work_date=work_date)
         self.assertAlmostEqual(within["early_lunch_minutes"], 0.0, places=1)
         self.assertAlmostEqual(within["early_minutes"], 0.0, places=1)
         self.assertFalse(within["is_early_exit"])
 
         # With no threshold the same punch is 3 minutes before the lunch start.
-        strict = classify_day(checkins, self._shift(late_compensate_threshold=0),
+        strict = classify_day(checkins, self._shift(lunch_early_late_threshold=0),
                               "Mark as Invalid", work_date=work_date)
         self.assertAlmostEqual(strict["early_lunch_minutes"], 3.0, places=1)
         self.assertAlmostEqual(strict["early_minutes"], 3.0, places=1)
@@ -1915,7 +1915,7 @@ class TestLunchDeviation(unittest.TestCase):
         """Leaving early for lunch and before the shift end both count as early."""
         from zkteco_attendance.zkteco_attendance.attendance_processor import classify_day
 
-        shift = self._shift(late_compensate_threshold=10, early_exit_grace=0)
+        shift = self._shift(lunch_early_late_threshold=10, early_exit_grace=0)
         checkins = [
             _mk_checkin("C1", "2026-08-10 08:00:00", "IN"),
             _mk_checkin("C2", "2026-08-10 11:40:00", "OUT"),  # 20 min before 12:00
@@ -1935,7 +1935,7 @@ class TestLunchDeviation(unittest.TestCase):
         """With Enable Lunch Deviation off only the shift graces are measured."""
         from zkteco_attendance.zkteco_attendance.attendance_processor import classify_day
 
-        shift = self._shift(late_compensate_threshold=10, enable_lunch_deviation=0)
+        shift = self._shift(lunch_early_late_threshold=10, enable_lunch_deviation=0)
         checkins = [
             _mk_checkin("C1", "2026-08-10 08:00:00", "IN"),
             _mk_checkin("C2", "2026-08-10 11:40:00", "OUT"),
@@ -1960,7 +1960,7 @@ class TestLunchDeviation(unittest.TestCase):
         )
 
         mock_holidays.return_value = {}
-        mock_shift.return_value = self._shift(late_compensate_threshold=10,
+        mock_shift.return_value = self._shift(lunch_early_late_threshold=10,
                                               early_exit_grace=0)
         checkins = [
             _mk_checkin("C1", "2026-08-10 08:00:00", "IN"),
@@ -2004,15 +2004,15 @@ class TestLunchDeviation(unittest.TestCase):
 class TestAdditionalWorkingMinutes(unittest.TestCase):
     """Additional working minutes earned around the shift's four boundaries.
 
-    The 'Threshold for Late/Compensate' only decides whether a boundary
-    counts; it is never deducted from the minutes earned.
+    The 'Threshold For lunch Additional Working Minutes' only decides whether
+    a boundary counts; it is never deducted from the minutes earned.
     """
 
     def _shift(self, **overrides):
         settings = {"start_time": "09:00:00", "end_time": "17:00:00",
                     "late_entry_grace": 0, "early_exit_grace": 0,
                     "lunch_start_time": "12:00:00", "lunch_end_time": "13:00:00",
-                    "late_compensate_threshold": 10}
+                    "add_working_lunch_threshold": 10}
         settings.update(overrides)
         return _day_shift(**settings)
 
@@ -2096,7 +2096,7 @@ class TestAdditionalWorkingMinutes(unittest.TestCase):
 
         mock_holidays.return_value = {}
         mock_shift.return_value = _day_shift(late_entry_grace=0, early_exit_grace=0,
-                                             late_compensate_threshold=10)
+                                             add_working_lunch_threshold=10)
         checkins = [
             _mk_checkin("C1", "2026-08-10 08:15:00", "IN"),
             _mk_checkin("C2", "2026-08-10 17:30:00", "OUT"),

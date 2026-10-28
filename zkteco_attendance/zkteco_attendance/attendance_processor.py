@@ -15,10 +15,10 @@ Handles:
   are deducted from the day's hours (can drop Present -> Half Day -> Absent).
   With Lunch Deviation enabled, late entry also counts the minutes past
   Lunch End Time and early exit the minutes before Lunch Start Time, both
-  beyond the shift's Threshold for Late/Compensate.  The deduction applies
-  to span-based methods only: with 'Actual Pairs (IN-OUT)' the hours are
-  already the sum of the worked pairs, so those minutes would be counted
-  twice and only flag the day (see _grace_deduction_minutes).
+  beyond the shift's Threshold for Lunch Late/Early Decision.  The
+  deduction applies to span-based methods only: with 'Actual Pairs (IN-OUT)'
+  the hours are already the sum of the worked pairs, so those minutes would
+  be counted twice and only flag the day (see _grace_deduction_minutes).
 - Overtime calculation split into four explicit categories, honoring the
   shift's Overtime Calculation Method:
     After Standard Hours - Day OT in 06:00-22:00 beyond the daily limit,
@@ -168,7 +168,7 @@ SHIFT_FIELDS = [
     "full_day_hours", "half_day_hours", "standard_working_hours",
     "working_hours_method", "lunch_break_hours", "missing_checkin_action",
     "enable_lunch_deviation", "lunch_start_time", "lunch_end_time",
-    "late_compensate_threshold",
+    "lunch_early_late_threshold", "add_working_lunch_threshold",
     "lunch_deviation_minutes", "lunch_deviation_threshold",
     "late_entry_grace", "early_exit_grace",
     "saturday_mode", "saturday_end_time", "saturday_half_day_hours",
@@ -525,7 +525,7 @@ def _late_early_minutes(day_checkins, shift, work_date):
       - early_shift_minutes: last OUT before (End Time - Early Exit Grace)
 
     Lunch part — only when the shift enables Lunch Deviation, using the
-    shift's 'Threshold for Late/Compensate' as the lunch grace:
+    shift's 'Threshold for Lunch Late/Early Decision' as the lunch grace:
       - late_lunch_minutes:  lunch IN after (Lunch End Time + threshold)
       - early_lunch_minutes: lunch OUT before (Lunch Start Time - threshold)
 
@@ -574,11 +574,11 @@ def _late_early_minutes(day_checkins, shift, work_date):
         )
 
     # Lunch part — measured on the same lunch punches as the deviation, with
-    # the shift's 'Threshold for Late/Compensate' acting as their grace.
+    # the shift's 'Threshold for Lunch Late/Early Decision' acting as their grace.
     pair = _get_lunch_punches(day_checkins, shift, work_date)
     if pair:
         lunch_out, lunch_in, lunch_start_dt, lunch_end_dt = pair
-        threshold = get_late_compensate_threshold(shift)
+        threshold = get_lunch_early_late_threshold(shift)
         result["late_lunch_minutes"] = max(
             0.0,
             (lunch_in - (lunch_end_dt + timedelta(minutes=threshold))).total_seconds() / 60.0,
@@ -631,10 +631,11 @@ def _additional_minutes(day_checkins, shift, work_date):
     Additional working minutes the employee put in around the shift's
     scheduled boundaries.
 
-    The shift's 'Threshold for Late/Compensate' only decides whether the extra
-    time counts at all — it is never deducted from the minutes earned.  A
-    punch that stays within the threshold of its scheduled time earns
-    nothing; once it passes the threshold the whole distance is credited:
+    The shift's 'Threshold For lunch Additional Working Minutes' only decides
+    whether the extra time counts at all — it is never deducted from the
+    minutes earned.  A punch that stays within the threshold of its scheduled
+    time earns nothing; once it passes the threshold the whole distance is
+    credited:
 
       - additional_shift_start_minutes: first IN before Start Time, when
         early by more than the threshold (e.g. End Time 17:00, threshold 10,
@@ -663,7 +664,7 @@ def _additional_minutes(day_checkins, shift, work_date):
     if start_dt is None:
         return result
 
-    threshold = get_late_compensate_threshold(shift)
+    threshold = get_add_working_lunch_threshold(shift)
 
     sorted_ci = sorted(day_checkins, key=lambda c: c["time"])
     first_in = next((c["time"] for c in sorted_ci if c["log_type"] == "IN"), None)
@@ -727,14 +728,27 @@ def get_lunch_deviation_threshold(shift):
     return flt(raw)
 
 
-def get_late_compensate_threshold(shift):
+def get_lunch_early_late_threshold(shift):
     """Grace minutes for the lunch late/early decision.
 
     Minutes after Lunch End Time beyond this count as late entry minutes and
     minutes before Lunch Start Time beyond it count as early exit minutes.
     Defaults to 0 when the shift does not set it.
     """
-    raw = (shift or {}).get("late_compensate_threshold")
+    raw = (shift or {}).get("lunch_early_late_threshold")
+    if raw in (None, ""):
+        return 0
+    return flt(raw)
+
+
+def get_add_working_lunch_threshold(shift):
+    """Gate minutes for the additional working minutes decision.
+
+    The threshold only decides whether extra time around a shift boundary
+    counts at all; it is never deducted from the minutes credited.
+    Defaults to 0 when the shift does not set it.
+    """
+    raw = (shift or {}).get("add_working_lunch_threshold")
     if raw in (None, ""):
         return 0
     return flt(raw)
@@ -1145,13 +1159,13 @@ def classify_day(day_checkins, shift, doc_missing_action,
     lunch break, so there the grace minutes only flag the day.  When Lunch
     Deviation is enabled the totals also include the lunch parts (late
     return past Lunch End Time, leaving before Lunch Start Time) beyond the
-    shift's Threshold for Late/Compensate, exposed separately as
+    shift's Threshold for Lunch Late/Early Decision, exposed separately as
     late_shift_minutes / late_lunch_minutes and early_shift_minutes /
     early_lunch_minutes.  Minutes worked beyond the shift's four boundaries
     (before Start Time, after Lunch Start Time, before Lunch End Time and
-    after End Time) are recorded as additional working minutes; the same
-    Threshold for Late/Compensate only decides whether a boundary counts, it
-    is never deducted from the minutes earned.
+    after End Time) are recorded as additional working minutes; the shift's
+    Threshold For lunch Additional Working Minutes only decides whether a
+    boundary counts, it is never deducted from the minutes earned.
 
     Status rules (working days):
       - Invalid    — checkins are missing an IN or OUT pair

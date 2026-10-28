@@ -5,10 +5,9 @@
    "label": "Check-ins (Last 7 Days)"
   }
  ],
- "content": "[{\"type\":\"chart\",\"data\":{\"chart_name\":\"Check-ins (Last 7 Days)\",\"col\":12}},{\"type\":\"card\",\"data\":{\"card_name\":\"Setup\",\"col\":4}},{\"type\":\"card\",\"data\":{\"card_name\":\"Device\",\"col\":4}},{\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\">Shifts &amp; Attendance</span>\",\"col\":12}},{\"type\":\"card\",\"data\":{\"card_name\":\"Shifts &amp; Attendance\",\"col\":4}},{\"type\":\"card\",\"data\":{\"card_name\":\"Attendace &amp; Payroll\",\"col\":4}}]",
+ "content": "[{\"type\":\"chart\",\"data\":{\"chart_name\":\"Check-ins (Last 7 Days)\",\"col\":12}},{\"type\":\"card\",\"data\":{\"card_name\":\"Setup\",\"col\":4}},{\"type\":\"card\",\"data\":{\"card_name\":\"Tools\",\"col\":4}},{\"type\":\"card\",\"data\":{\"card_name\":\"Overview\",\"col\":4}}]",
  "creation": "2024-01-01 00:00:00",
  "docstatus": 0,
- "type": "Workspace",
  "doctype": "Workspace",
  "for_user": "",
  "hide_custom": 0,
@@ -16,44 +15,6 @@
  "idx": 0,
  "label": "Biometric Attendance",
  "links": [
-  {
-   "hidden": 0,
-   "is_query_report": 0,
-   "label": "Attendace &amp; Payroll",
-   "link_count": 4,
-   "onboard": 0,
-   "type": "Card Break"
-  },
-  {
-   "hidden": 0,
-   "is_query_report": 0,
-   "label": "Attendance Summary",
-   "link_count": 0,
-   "link_to": "Attendance Summary",
-   "link_type": "DocType",
-   "onboard": 0,
-   "type": "Link"
-  },
-  {
-   "hidden": 0,
-   "is_query_report": 0,
-   "label": "Manual Checkin Request",
-   "link_count": 0,
-   "link_to": "Manual Checkin Request",
-   "link_type": "DocType",
-   "onboard": 0,
-   "type": "Link"
-  },
-  {
-   "hidden": 0,
-   "is_query_report": 0,
-   "label": "Employee Daily Checkins",
-   "link_count": 0,
-   "link_to": "zk-daily-checkins",
-   "link_type": "Page",
-   "onboard": 0,
-   "type": "Link"
-  },
   {
    "hidden": 0,
    "is_query_report": 0,
@@ -105,7 +66,73 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "Device",
+   "label": "Shifts &amp; Attendance",
+   "link_count": 1,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Employee Checkins",
+   "link_count": 0,
+   "link_to": "Employee Checkin",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Tools",
+   "link_count": 4,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Employee Daily Checkins",
+   "link_count": 0,
+   "link_to": "zk-daily-checkins",
+   "link_type": "Page",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Attendance Summary",
+   "link_count": 0,
+   "link_to": "Attendance Summary",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Manual Checkin Request",
+   "link_count": 0,
+   "link_to": "Manual Checkin Request",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Import Checkins",
+   "link_count": 0,
+   "link_to": "zk-import-checkins",
+   "link_type": "Page",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Overview",
    "link_count": 2,
    "onboard": 0,
    "type": "Card Break"
@@ -129,37 +156,9 @@
    "link_type": "Page",
    "onboard": 0,
    "type": "Link"
-  },
-  {
-   "hidden": 0,
-   "is_query_report": 0,
-   "label": "Checkin Import Page",
-   "link_count": 0,
-   "link_to": "zkteco-import-checkins",
-   "link_type": "Page",
-   "onboard": 0,
-   "type": "Link"
-  },
-  {
-   "hidden": 0,
-   "is_query_report": 0,
-   "label": "Shifts &amp; Attendance",
-   "link_count": 1,
-   "onboard": 0,
-   "type": "Card Break"
-  },
-  {
-   "hidden": 0,
-   "is_query_report": 0,
-   "label": "Employee Checkins",
-   "link_count": 0,
-   "link_to": "Employee Checkin",
-   "link_type": "DocType",
-   "onboard": 0,
-   "type": "Link"
   }
  ],
- "modified": "2026-08-14 23:13:01.050603",
+ "modified": "2026-10-28 09:20:22.616114",
  "modified_by": "Administrator",
  "module": "Zkteco Attendance",
  "name": "Biometric Attendance",
@@ -167,15 +166,15 @@
  "public": 1,
  "quick_lists": [],
  "roles": [
-    {
-            "role": "System Manager"
-        },
-        {
-            "role": "HR Manager"
-        },
-        {
-            "role": "Biometric Device Manager"
-        }
+  {
+   "role": "System Manager"
+  },
+  {
+   "role": "HR Manager"
+  },
+  {
+   "role": "Biometric Device Manager"
+  }
  ],
  "sequence_id": 100.0,
  "shortcuts": [],
